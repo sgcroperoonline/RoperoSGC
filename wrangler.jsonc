@@ -1,0 +1,45 @@
+// Configuración de Cloudflare Workers para Ropero SG.
+// Plan gratuito: sin "arranque en frío", 100.000 visitas al día y base de datos D1 de 5 GB.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ropero-sg",
+  "main": "src/index.js",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Las páginas (HTML, CSS, JS, fotos) salen de /public. Todo lo que empieza con /api/ lo atiende el servidor.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+
+  // Base de datos. Reemplaza database_id por el que te entrega:  npx wrangler d1 create ropero-sg
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ropero-sg",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // Cada 10 minutos se anulan los pagos Webpay abandonados y las prendas vuelven al catálogo.
+  "triggers": { "crons": ["*/10 * * * *"] },
+
+  // Variables públicas (no secretas). Las claves van con:  npx wrangler secret put NOMBRE
+  "vars": {
+    "WEBPAY_AMBIENTE": "integracion",
+    "WEBPAY_CODIGO_COMERCIO": "597055555532",
+    "MINUTOS_EXPIRA_WEBPAY": "20",
+    "URL_PUBLICA": "",
+    "SMTP_HOST": "smtp.gmail.com",
+    "SMTP_PUERTO": "465",
+    "SMTP_SEGURIDAD": "tls",
+    "SMTP_USUARIO": "",
+    "SMTP_REMITENTE": "",
+    "CORREO_AVISOS": ""
+  },
+
+  "observability": { "enabled": true }
+}

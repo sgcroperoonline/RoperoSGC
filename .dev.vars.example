@@ -1,0 +1,15 @@
+# Copia este archivo como .dev.vars para probar en tu computador (npm run dev).
+# .dev.vars NO se sube a GitHub. En Cloudflare estas claves se guardan con:
+#   npx wrangler secret put ADMIN_CLAVE
+#   npx wrangler secret put WEBPAY_API_KEY
+#   npx wrangler secret put SMTP_CLAVE
+
+# Clave del panel de voluntarias (elige una larga)
+ADMIN_CLAVE=cambia-esta-clave
+
+# Webpay: en ambiente "integracion" se usa la llave pública de pruebas de Transbank si dejas esto vacío.
+# En "produccion" pon la llave secreta que te entrega Transbank.
+WEBPAY_API_KEY=
+
+# Contraseña de aplicación del correo que envía los comprobantes (Gmail: myaccount.google.com/apppasswords)
+SMTP_CLAVE=
