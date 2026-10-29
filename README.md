@@ -166,9 +166,10 @@ Webpay que devuelva el dinero a la tarjeta. Si Webpay no puede (por ejemplo, pas
 o era tarjeta de débito y el banco no lo permite), el panel muestra el error y deja reintentar o
 marcar la devolución como hecha a mano.
 
-**Pagos abandonados:** si alguien entra a Webpay y no termina de pagar, cada 10 minutos el
-servidor anula esos pedidos (después de 20 minutos) y las prendas vuelven al catálogo. No se
-hace ningún cobro: Transbank solo cobra cuando el servidor confirma el pago.
+**Pagos abandonados:** si alguien entra a Webpay y vuelve a la tienda sin pagar, su pedido se
+anula al instante y las prendas siguen en su carrito. Si cierra la pestaña, cada 10 minutos el
+servidor anula los pedidos que llevan más de 20 minutos sin pagarse y las prendas vuelven al
+catálogo. No se hace ningún cobro: Transbank solo cobra cuando el servidor confirma el pago.
 
 ---
 

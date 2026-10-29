@@ -882,6 +882,14 @@ async function confirmarPedido(){
 
   ocupado(boton, pago === "webpay" ? "Conectando con Webpay…" : "Enviando pedido…");
 
+  // Si quedó a medias un pago Webpay anterior, primero se cancela:
+  // si no, sus prendas siguen reservadas y parecerían agotadas.
+  const anterior = leerPagoEnCurso();
+  if (anterior){
+    const p = await cancelarPagoEnCurso(anterior);
+    if (p && p.estadoPago !== "pendiente"){ borrarPagoEnCurso(); estado.retenerCarrito = false; }
+  }
+
   let r;
   try{
     r = await api("/api/pedidos", { metodo:"POST", cuerpo });
@@ -1161,6 +1169,49 @@ function pintarErrorCarga(mensaje){
   mostrarVista("Confirmacion");
 }
 
+/* ---------- Pago Webpay que quedó a medias ----------
+   Si el comprador vuelve de Webpay sin pagar (botón "Atrás", o abre de
+   nuevo la tienda en esta pestaña), su pedido seguiría reservando las
+   prendas. Le pedimos al servidor que lo cancele. */
+
+/* Devuelve el pedido con su estado actual, o null si no se pudo preguntar. */
+async function cancelarPagoEnCurso(enCurso){
+  try{
+    const r = await api("/api/pedidos/" + encodeURIComponent(enCurso.numero) + "/cancelar",
+                        { metodo:"POST", cuerpo:{ t:enCurso.token } });
+    return r.pedido || null;
+  }catch(e){
+    if (e.estado === 404) borrarPagoEnCurso();   // ese pedido no existe: lo olvidamos
+    return null;
+  }
+}
+
+/* Si quedó un pago a medias, lo cancela y muestra cómo quedó.
+   Sin conexión no hace nada: la tienda sigue funcionando. */
+async function revisarPagoAbandonado(){
+  const enCurso = leerPagoEnCurso();
+  if (!enCurso) return;
+  const p = await cancelarPagoEnCurso(enCurso);
+  if (!p){
+    // Sin conexión: no tocamos el carrito (sus prendas siguen reservadas por ese
+    // pedido); confirmarPedido() lo vuelve a intentar antes de crear otro.
+    if (leerPagoEnCurso()) estado.retenerCarrito = true;
+    return;
+  }
+
+  if (p.estadoPago === "pagado" || p.estadoPago === "pendiente"){
+    // Ya se pagó, o Webpay lo está confirmando justo ahora: mostramos ese pedido
+    history.replaceState(null, "", "?pedido=" + encodeURIComponent(p.numero) + "&t=" + encodeURIComponent(enCurso.token));
+    await mostrarRetorno(p.numero, enCurso.token);
+    return;
+  }
+  borrarPagoEnCurso();
+  if (p.estadoPago === "anulado" || p.estadoPago === "rechazado"){
+    avisar("Tu pago en Webpay no se completó. No se hizo ningún cargo; " +
+      (enCurso.origen === "directa" ? "puedes volver a comprarla." : "tus prendas siguen en el carrito."));
+  }
+}
+
 /* "Intentar de nuevo": vuelve al checkout con el mismo carrito
    o con la misma compra directa. */
 async function reintentarPago(){
@@ -1399,9 +1450,15 @@ function iniciar(){
   });
 
   // Si alguien vuelve con el botón "Atrás" desde Webpay, el navegador puede
-  // mostrar la página guardada con el botón desactivado: lo reactivamos.
+  // mostrar la página guardada con el botón desactivado: lo reactivamos
+  // y cancelamos el pago que quedó a medias (luego se recarga el catálogo).
   window.addEventListener("pageshow", e => {
-    if (e.persisted) $$("button[data-texto]").forEach(libre);
+    if (!e.persisted) return;
+    $$("button[data-texto]").forEach(libre);
+    if (!new URLSearchParams(location.search).get("pedido") && leerPagoEnCurso()){
+      estado.retornoListo = revisarPagoAbandonado();
+      estado.retornoListo.catch(() => {}).then(() => cargarCatalogo());
+    }
   });
 
   pintarFiltros();
@@ -1415,11 +1472,16 @@ function iniciar(){
   // ¿Venimos de vuelta de Webpay o de un link de comprobante?
   const params = new URLSearchParams(location.search);
   const numero = params.get("pedido"), t = params.get("t");
-  if (numero && t)                        estado.retornoListo = mostrarRetorno(numero, t);
-  else if (params.get("pago") === "error") estado.retornoListo = Promise.resolve(pintarErrorPago());
-  else                                     estado.retornoListo = Promise.resolve();
-
-  cargarCatalogo();
+  if (numero && t){
+    estado.retornoListo = mostrarRetorno(numero, t);
+    cargarCatalogo();
+  } else {
+    if (params.get("pago") === "error") pintarErrorPago();
+    // Primero se cancela un pago Webpay que haya quedado a medias y después
+    // se pide el catálogo: así trae el stock devuelto y el carrito no pierde esas prendas.
+    estado.retornoListo = revisarPagoAbandonado();
+    estado.retornoListo.catch(() => {}).then(() => cargarCatalogo());
+  }
 }
 
 document.addEventListener("DOMContentLoaded", iniciar);

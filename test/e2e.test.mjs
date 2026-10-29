@@ -193,6 +193,55 @@ test("si el pago se anula en Webpay, el carrito se conserva", OPC, async () => {
   sinErroresDeConsola(errores);
 });
 
+test("si vuelve de Webpay con «Atrás», el pago se cancela y puede comprar de nuevo", OPC, async () => {
+  const { pagina, errores } = await nuevaPagina();
+  // Respuestas de POST /api/pedidos: ningún 409 por la reserva de su propio pedido
+  const respuestasPedido = [];
+  pagina.on("response", r => {
+    if (r.request().method() === "POST" && new URL(r.url()).pathname === "/api/pedidos") respuestasPedido.push(r.status());
+  });
+
+  await pagina.goto(e.url + "/");
+  await agregarAlCarrito(pagina, "SG-0007");   // hay 1 sola: si siguiera reservada, el segundo intento daría 409
+  const datos = { nombre: "Javiera Rojas", correo: "javiera@ejemplo.cl", fono: "+56 9 5555 6666" };
+  const primero = await pagarConWebpayHastaElBanco(pagina, datos);
+  assert.equal((await prendaAdmin("SG-0007")).stock, 0, "mientras paga, la prenda queda reservada");
+
+  // En la página de Webpay aprieta "Atrás" del navegador
+  await pagina.goBack();
+  await pagina.getByText("Tu pago en Webpay no se completó").first().waitFor();
+  assert.ok((await pagina.locator("#avisoFlotante").innerText()).includes("tus prendas siguen en el carrito"));
+  await pagina.waitForLoadState("networkidle");   // ya se recargó el catálogo y se revisó el carrito
+
+  const p = await pedidoAdmin(primero);
+  assert.equal(p.estadoPago, "anulado");
+  assert.equal(p.motivoAnulacion, "Pago abandonado: el comprador volvió a la tienda");
+  assert.equal(p.transacciones.find(t => t.tipo === "pago").estado, "abortada");
+  assert.equal((await prendaAdmin("SG-0007")).stock, 1, "la prenda reservada vuelve al catálogo");
+  assert.equal(await pagina.evaluate(() => sessionStorage.getItem("ropero_pago_en_curso")), null);
+
+  // El carrito conserva la prenda
+  const carrito = await pagina.evaluate(() => JSON.parse(localStorage.getItem("ropero_carrito") || "[]"));
+  assert.deepEqual(carrito, [{ id: "SG-0007", cant: 1 }]);
+  assert.equal((await pagina.textContent("#contadorCarrito")).trim(), "1");
+
+  // Confirma otra vez: llega a Webpay con un pedido nuevo y esta vez paga
+  await pagina.getByRole("button", { name: "Abrir carrito" }).click();
+  const segundo = await pagarConWebpayHastaElBanco(pagina, datos);
+  assert.notEqual(segundo, primero);
+  await pagina.getByRole("button", { name: "Pagar", exact: true }).click();
+  await pagina.waitForURL(u => u.origin === new URL(e.url).origin);
+  await pagina.getByText("¡Pedido confirmado!").first().waitFor();
+  await pagina.getByText(segundo).first().waitFor();
+  await pagina.waitForFunction(() => JSON.parse(localStorage.getItem("ropero_carrito") || "[]").length === 0);
+
+  assert.deepEqual(respuestasPedido, [201, 201]);
+  assert.equal((await pedidoAdmin(segundo)).estadoPago, "pagado");
+  assert.equal((await pedidoAdmin(primero)).estadoPago, "anulado");
+  assert.equal((await prendaAdmin("SG-0007")).stock, 0);
+  sinErroresDeConsola(errores);
+});
+
 test("Mis pedidos: buscar la compra y pedir un reembolso", OPC, async () => {
   assert.ok(compra, "necesita la compra del primer test");
   const { pagina, errores } = await nuevaPagina();

@@ -229,17 +229,40 @@ rutasPublicas.post("/pedidos/buscar", async (c) => {
   return c.json({ pedido: await cargarPedido(c.env.DB, fila.id) });
 });
 
-// GET /api/pedidos/:numero?t=<token>  (comprobante después de pagar)
-rutasPublicas.get("/pedidos/:numero", async (c) => {
-  const numero = numeroPedidoValido(c.req.param("numero"));
-  const token = c.req.query("t");
+// El pedido con ese número y ese token del comprobante; si no calzan, 404.
+async function filaConToken(db, numeroCrudo, token) {
+  const numero = numeroPedidoValido(numeroCrudo);
   const fila = numero && typeof token === "string" && token.length >= 16 && token.length <= 100
-    ? await filaPedidoPorNumero(c.env.DB, numero)
+    ? await filaPedidoPorNumero(db, numero)
     : null;
   if (!fila || !(await igualesSeguro(token, fila.token_acceso))) {
     throw new ErrorPublico(404, "No encontramos ese pedido.");
   }
+  return fila;
+}
+
+// GET /api/pedidos/:numero?t=<token>  (comprobante después de pagar)
+rutasPublicas.get("/pedidos/:numero", async (c) => {
+  const fila = await filaConToken(c.env.DB, c.req.param("numero"), c.req.query("t"));
   return c.json({ pedido: await cargarPedido(c.env.DB, fila.id) });
+});
+
+// POST /api/pedidos/:numero/cancelar  { t }
+// El comprador volvió a la tienda sin terminar de pagar en Webpay (botón "Atrás"):
+// se anula el pedido y sus prendas vuelven al catálogo para que pueda comprar de nuevo.
+// Si el pago se está confirmando justo ahora, o el pedido ya no está pendiente, no cambia nada.
+rutasPublicas.post("/pedidos/:numero/cancelar", async (c) => {
+  const db = c.env.DB;
+  const cuerpo = await leerJSON(c);
+  const fila = await filaConToken(db, c.req.param("numero"), cuerpo.t);
+  if (fila.metodo_pago === "webpay" && fila.estado_pago === "pendiente") {
+    await db.batch(sentenciasCerrarPendiente(db, fila.id, {
+      nuevoEstado: "anulado",
+      motivo: "Pago abandonado: el comprador volvió a la tienda",
+      estadoTransaccion: "abortada",
+    }));
+  }
+  return c.json({ pedido: await cargarPedido(db, fila.id) });
 });
 
 // POST /api/pedidos/:numero/reembolso  { correo? , t?, motivo }

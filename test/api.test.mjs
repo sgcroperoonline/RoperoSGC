@@ -11,6 +11,7 @@
      SG-0006            anulada y expirada en Webpay
      SG-0007            rechazada por el banco
      SG-0008            doble retorno (y luego entregado / CSV)
+     SG-0006, SG-0007   pago cancelado al volver a la tienda sin pagar
      SG-0005            sin stock (se piden más de las que hay)
      SG-0009            dos compras al mismo tiempo
      SG-0010            precio enviado por el cliente
@@ -37,6 +38,7 @@ let fallosIngreso = 0;       // intentos de ingreso fallidos hechos por los test
 // Pedidos que se reutilizan entre tests
 let pedidoAprobado;          // SG-0004 + 2×SG-0013, pagado
 let pedidoDoble;             // SG-0008, pagado
+let pedidoCancelado;         // SG-0006, cancelado al volver a la tienda sin pagar
 let numeroEnvejecido;        // pedido al que el test del cron le cambió la fecha de creación
 const sinCorreo = [];        // números de pedidos que NUNCA deben generar correos
 
@@ -355,6 +357,92 @@ test("retorno doble de Webpay: no confirma dos veces ni descuenta dos veces", OP
   const pa = await pedidoAdmin(pedido.numero);
   assert.equal(transaccionesDePago(pa).length, 1);
   assert.equal(transaccionesDePago(pa)[0].estado, "autorizada");
+});
+
+/* ---------- El comprador vuelve a la tienda sin pagar ("Atrás" desde Webpay) ---------- */
+
+const cancelar = (numero, cuerpo) => e.api(`/api/pedidos/${encodeURIComponent(numero)}/cancelar`, { metodo: "POST", cuerpo });
+
+test("cancelar un pago Webpay a medias: libera el stock y la transacción queda abortada", OPC, async () => {
+  const pedido = await crearPedido([{ id: "SG-0006", cant: 1 }]);
+  pedidoCancelado = pedido;
+  sinCorreo.push(pedido.numero);
+  assert.equal(await stockDe("SG-0006"), 0);
+
+  // Sin el token correcto: 404 y no se toca nada
+  for (const [nombre, numero, cuerpo] of [
+    ["token inventado", pedido.numero, { t: "x".repeat(43) }],
+    ["sin token", pedido.numero, {}],
+    ["token de otro pedido", pedido.numero, { t: pedidoDoble.token }],
+    ["número que no existe", `RSG-${ANIO}-99999`, { t: pedido.token }]
+  ]) {
+    const r = await cancelar(numero, cuerpo);
+    assert.equal(r.status, 404, `${nombre}: esperaba 404 y llegó ${r.status} ${r.texto}`);
+    assert.equal(typeof r.datos?.error, "string", `${nombre}: falta el mensaje`);
+  }
+  assert.equal((await verPedido(pedido)).estadoPago, "pendiente");
+  assert.equal(await stockDe("SG-0006"), 0);
+
+  // El número se acepta sin distinguir mayúsculas, como en las otras rutas
+  const r = await cancelar(pedido.numero.toLowerCase(), { t: pedido.token });
+  assert.equal(r.status, 200, r.texto);
+  assert.equal(r.datos.pedido.numero, pedido.numero);
+  assert.equal(r.datos.pedido.estadoPago, "anulado");
+  assert.equal(r.datos.pedido.comprador.fono, undefined, "responde la vista pública del pedido");
+  assert.equal(await stockDe("SG-0006"), 1, "la prenda vuelve al catálogo");
+
+  const pa = await pedidoAdmin(pedido.numero);
+  assert.equal(transaccionesDePago(pa).length, 1);
+  assert.equal(transaccionesDePago(pa)[0].estado, "abortada");
+  assert.equal(pa.motivoAnulacion, "Pago abandonado: el comprador volvió a la tienda");
+  assert.ok(pa.anuladoEn, "falta anuladoEn");
+
+  // Repetirlo no cambia nada (el stock no se devuelve dos veces)
+  const otraVez = await cancelar(pedido.numero, { t: pedido.token });
+  assert.equal(otraVez.status, 200, otraVez.texto);
+  assert.equal(otraVez.datos.pedido.estadoPago, "anulado");
+  assert.equal(await stockDe("SG-0006"), 1);
+  assert.equal(e.webpay.llamadasDe("confirmar", pedido.webpay.token).length, 0);
+});
+
+test("volver de Webpay con token_ws después de cancelar: NO se confirma el pago", OPC, async () => {
+  assert.ok(pedidoCancelado, "necesita el pedido cancelado del test anterior");
+  // El comprador vuelve a la página de Webpay ("Adelante") y paga igual
+  await volverDeWebpay(pedidoCancelado, "pagar");
+
+  const llamadas = await (await fetch(e.webpay.url + "/__llamadas")).json();
+  const delPedido = llamadas.filter(l => l.token === pedidoCancelado.webpay.token);
+  assert.deepEqual(delPedido.map(l => l.operacion), [], "no se llama a Transbank: sin commit, Transbank reversa solo");
+
+  assert.equal((await verPedido(pedidoCancelado)).estadoPago, "anulado");
+  assert.equal(await stockDe("SG-0006"), 1);
+  assert.equal(transaccionesDePago(await pedidoAdmin(pedidoCancelado.numero))[0].estado, "abortada");
+});
+
+test("cancelar no toca pedidos pagados ni pedidos que no son Webpay", OPC, async () => {
+  const pagado = await cancelar(pedidoDoble.numero, { t: pedidoDoble.token });
+  assert.equal(pagado.status, 200, pagado.texto);
+  assert.equal(pagado.datos.pedido.estadoPago, "pagado");
+  assert.equal(pagado.datos.pedido.pago.codigoAutorizacion, "1213");
+  assert.equal(await stockDe("SG-0008"), 0);
+  const pa = await pedidoAdmin(pedidoDoble.numero);
+  assert.equal(pa.estadoPago, "pagado");
+  assert.equal(transaccionesDePago(pa)[0].estado, "autorizada");
+
+  // Transferencia y efectivo están apagados: se simula uno cambiando el método directo en la base
+  const pedido = await crearPedido([{ id: "SG-0007", cant: 1 }]);
+  sinCorreo.push(pedido.numero);
+  await e.sql(`UPDATE pedidos SET metodo_pago = 'transferencia' WHERE numero = '${pedido.numero}'`);
+  const transferencia = await cancelar(pedido.numero, { t: pedido.token });
+  assert.equal(transferencia.status, 200, transferencia.texto);
+  assert.equal(transferencia.datos.pedido.metodoPago, "transferencia");
+  assert.equal(transferencia.datos.pedido.estadoPago, "pendiente", "una transferencia no se anula por esta vía");
+  assert.equal(await stockDe("SG-0007"), 0);
+
+  // De vuelta a Webpay sí se cancela (así la prenda queda libre para los demás tests)
+  await e.sql(`UPDATE pedidos SET metodo_pago = 'webpay' WHERE numero = '${pedido.numero}'`);
+  assert.equal((await cancelar(pedido.numero, { t: pedido.token })).datos.pedido.estadoPago, "anulado");
+  assert.equal(await stockDe("SG-0007"), 1);
 });
 
 test("sin stock: 409 con la lista de prendas que no se pueden comprar", OPC, async () => {
