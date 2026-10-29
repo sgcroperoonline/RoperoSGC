@@ -157,8 +157,9 @@ Mientras no hagas esto, **Webpay está en modo de pruebas y no se cobra nada**.
    - La llave, como secreto: `npx wrangler secret put WEBPAY_API_KEY`
    - `npm run deploy`
 
-El servidor se niega a operar en producción si falta la llave propia, para no mezclar
-credenciales de prueba con cobros reales.
+Si `WEBPAY_AMBIENTE` dice `produccion` pero falta la llave propia o el código de comercio
+sigue siendo el de pruebas, el servidor no acepta pagos con Webpay (la tienda muestra un
+mensaje de error). Así nunca se mezclan credenciales de prueba con cobros reales.
 
 **Reembolsos:** cuando una voluntaria aprueba un reembolso en el panel, el servidor le pide a
 Webpay que devuelva el dinero a la tarjeta. Si Webpay no puede (por ejemplo, pasaron muchos días
@@ -231,7 +232,8 @@ npm run test:e2e    # recorre la tienda y el panel en un navegador (requiere Pla
 ```
 
 Las pruebas usan una imitación local de Webpay y de un servidor de correo, así que no
-necesitan internet ni cobran nada. Para `test:e2e` en tu computador instala Playwright una vez:
+necesitan internet ni cobran nada. Si tu `.dev.vars` tiene una `WEBPAY_API_KEY` real, déjala
+vacía mientras corres las pruebas: la imitación solo acepta las credenciales públicas de prueba. Para `test:e2e` en tu computador instala Playwright una vez:
 `npm install --no-save playwright && npx playwright install chromium`.
 
 ---
