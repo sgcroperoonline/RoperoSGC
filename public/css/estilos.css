@@ -347,10 +347,13 @@ nav.menu a:hover, nav.menu button:hover{ background:rgba(255,255,255,.14); }
   background:#FFF6E3; border:1px solid #F3D79A; color:#6B4E10;
 }
 .aviso.info{ background:var(--azul-tenue); border-color:#C6D4EE; color:var(--azul-oscuro); }
+.texto-multilinea{ white-space:pre-line; }   /* respeta los saltos de línea de los datos de transferencia */
 
 .exito{ text-align:center; padding:46px 26px; }
 .exito .tic{ width:74px; height:74px; border-radius:50%; background:var(--ok); color:#fff; display:grid; place-items:center; font-size:2.2rem; margin:0 auto 18px; }
 .exito h2{ font-size:1.7rem; margin-bottom:8px; }
+.exito .tic.error{ background:var(--error); }
+.exito .tic.espera{ background:var(--alerta); }
 .exito .numero{ font-family:var(--display); font-weight:800; font-size:1.5rem; color:var(--azul); background:var(--azul-tenue); border-radius:var(--radio); padding:12px 24px; display:inline-block; margin:16px 0; letter-spacing:.05em; }
 
 /* ============================ TABLAS (admin / pedidos) ============================ */
@@ -386,13 +389,6 @@ footer.pie .contenedor{ display:grid; grid-template-columns:repeat(auto-fit,minm
 footer.pie h4{ color:#fff; font-size:.95rem; margin-bottom:9px; }
 footer.pie a{ color:#DCE6F8; }
 footer.pie .legal{ border-top:1px solid rgba(255,255,255,.14); margin-top:24px; padding-top:16px; text-align:center; font-size:.8rem; }
-
-/* ============================ AVISO MODO DEMO ============================ */
-
-.cinta-demo{
-  background:var(--dorado); color:var(--azul-oscuro); text-align:center;
-  font-size:.83rem; font-weight:700; padding:7px 16px;
-}
 
 /* ============================ RESPONSIVE ============================ */
 

@@ -1,0 +1,15 @@
+# Encabezados de seguridad para las páginas y archivos de /public.
+# Cloudflare lee este archivo al publicar (no se muestra como página).
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+
+# El panel de voluntarias no debe aparecer en buscadores.
+/admin.html
+  X-Robots-Tag: noindex, nofollow
+
+/admin
+  X-Robots-Tag: noindex, nofollow
