@@ -7,26 +7,26 @@ import { ahora, UN_DIA_MS } from "./util.js";
    RESERVA MIENTRAS SE CONFIRMA UN PAGO
    Cuando el comprador vuelve de Webpay, el servidor "reserva" su
    transacción (le pone la hora actual en actualizado_en) antes de
-   pedirle a Transbank que cobre. Mientras dura la reserva, nadie más
-   (el cron, otra pestaña, el panel) puede anular ese pedido. Así
-   nunca se cobra un pedido que al mismo tiempo se estaba anulando.
-   Llamar a Transbank demora como máximo ~30 s; la reserva dura 2 min
-   por si el servidor se cae a mitad de camino.
+   pedirle a Transbank que cobre. Una transacción reservada nunca se
+   anula "a ciegas" (el cron, otra pestaña, el panel): puede que
+   Transbank sí haya cobrado y el resultado no alcanzara a guardarse.
+   Esos pedidos se resuelven preguntándole a Transbank (src/pagos.js).
+   Llamar a Transbank demora como máximo ~30 s; pasados 2 min, otro
+   proceso puede tomar la reserva para volver a preguntar.
    ---------------------------------------------------------------- */
 export const RESERVA_CONFIRMACION_MS = 2 * 60 * 1000;
 
 export const limiteReserva = (momento) =>
   new Date(Date.parse(momento) - RESERVA_CONFIRMACION_MS).toISOString();
 
-// Condición SQL: el pedido ?1 sigue pendiente y nadie está confirmando su pago ahora.
-// ?2 = límite de la reserva (ver arriba). Se repite dentro de cada sentencia para que
-// cada una se revise sola, en el mismo instante en que se ejecuta.
+// Condición SQL: el pedido ?1 sigue pendiente y su pago nunca se empezó a confirmar.
+// Se repite dentro de cada sentencia para que cada una se revise sola, en el mismo
+// instante en que se ejecuta.
 const SE_PUEDE_CERRAR = `
   EXISTS (SELECT 1 FROM pedidos WHERE id = ?1 AND estado_pago = 'pendiente')
   AND NOT EXISTS (
     SELECT 1 FROM transacciones t
-    WHERE t.pedido_id = ?1 AND t.tipo = 'pago' AND t.estado = 'iniciada'
-      AND t.actualizado_en > t.creado_en AND t.actualizado_en > ?2)`;
+    WHERE t.pedido_id = ?1 AND t.tipo = 'pago' AND t.estado = 'iniciada' AND t.actualizado_en > t.creado_en)`;
 
 /**
  * Sentencias para cerrar un pedido PENDIENTE (anularlo o marcarlo rechazado)
@@ -34,31 +34,31 @@ const SE_PUEDE_CERRAR = `
  * Son "idempotentes": si dos procesos las corren a la vez (el retorno de Webpay y el
  * cron), solo el primero devuelve el stock; para el segundo el pedido ya no está
  * pendiente y no pasa nada. La última sentencia devuelve el id si el pedido se cerró.
+ * Si el pago tiene una confirmación empezada (ver arriba), no cambian nada.
  */
 export function sentenciasCerrarPendiente(db, pedidoId, { nuevoEstado, motivo, estadoTransaccion = null, momento = ahora() }) {
-  const limite = limiteReserva(momento);
   const sentencias = [];
   if (estadoTransaccion) {
     // El intento de pago Webpay que seguía abierto queda cerrado con este estado.
     sentencias.push(db.prepare(
-      `UPDATE transacciones SET estado = ?3, actualizado_en = ?4
+      `UPDATE transacciones SET estado = ?2, actualizado_en = ?3
        WHERE pedido_id = ?1 AND tipo = 'pago' AND estado = 'iniciada' AND ${SE_PUEDE_CERRAR}`
-    ).bind(pedidoId, limite, estadoTransaccion, momento));
+    ).bind(pedidoId, estadoTransaccion, momento));
   }
   // Primero se devuelve el stock (solo si el pedido sigue pendiente)…
   sentencias.push(db.prepare(
     `UPDATE productos
      SET stock = stock + (SELECT SUM(cantidad) FROM pedido_items WHERE pedido_id = ?1 AND producto_id = productos.id),
-         actualizado_en = ?3
+         actualizado_en = ?2
      WHERE id IN (SELECT producto_id FROM pedido_items WHERE pedido_id = ?1) AND ${SE_PUEDE_CERRAR}`
-  ).bind(pedidoId, limite, momento));
+  ).bind(pedidoId, momento));
   // …y después se cambia el estado del pedido (con la misma condición).
   sentencias.push(db.prepare(
     `UPDATE pedidos
-     SET estado_pago = ?3, anulado_en = ?4, motivo_anulacion = ?5, actualizado_en = ?4
+     SET estado_pago = ?2, anulado_en = ?3, motivo_anulacion = ?4, actualizado_en = ?3
      WHERE id = ?1 AND ${SE_PUEDE_CERRAR}
      RETURNING id`
-  ).bind(pedidoId, limite, nuevoEstado, momento, motivo));
+  ).bind(pedidoId, nuevoEstado, momento, motivo));
   return sentencias;
 }
 
@@ -75,7 +75,8 @@ export function marcarExpiradaSiSigueIniciada(db, transaccionId) {
 /**
  * Anula los pedidos Webpay que llevan más de MINUTOS_EXPIRA_WEBPAY sin pagarse
  * y devuelve sus prendas al catálogo. La usan el cron y la creación de pedidos.
- * Devuelve cuántos pedidos anuló.
+ * Los que tienen una confirmación empezada no se tocan: los resuelve el cron
+ * preguntándole a Transbank (src/pagos.js). Devuelve cuántos pedidos anuló.
  */
 export async function expirarPedidosWebpay(env) {
   const db = env.DB;
@@ -84,6 +85,9 @@ export async function expirarPedidosWebpay(env) {
   const { results } = await db.prepare(
     `SELECT id FROM pedidos
      WHERE metodo_pago = 'webpay' AND estado_pago = 'pendiente' AND creado_en < ?
+       AND NOT EXISTS (SELECT 1 FROM transacciones t
+                       WHERE t.pedido_id = pedidos.id AND t.tipo = 'pago' AND t.estado = 'iniciada'
+                         AND t.actualizado_en > t.creado_en)
      ORDER BY id LIMIT 100`
   ).bind(limite).all();
   if (!results.length) return 0;
@@ -172,9 +176,12 @@ export function armarPedido(fila, items, transacciones, reembolso, admin = false
       pedido.reembolso.resueltoEn = reembolso.resuelto_en;
       pedido.reembolso.devueltoEn = reembolso.devuelto_en;
     }
+    // Pagado con la tarjeta de prueba (Webpay en integración): no entró dinero real.
+    pedido.pagoDePrueba = pago?.ambiente === "integracion";
     pedido.transacciones = transacciones.map((t) => ({
       tipo: t.tipo,
       estado: t.estado,
+      ambiente: t.ambiente,
       monto: t.monto,
       codigoRespuesta: t.codigo_respuesta,
       codigoAutorizacion: t.codigo_autorizacion,

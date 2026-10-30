@@ -18,7 +18,9 @@ reembolsos y un panel para las apoderadas voluntarias. Todo queda guardado en un
 
 **Por qué Cloudflare:** el plan gratis alcanza de sobra para el ropero, no tiene "arranque en frío"
 (la página responde al instante aunque nadie la haya visitado en días) y permite uso con pagos.
-Páginas, servidor y base de datos quedan en un solo lugar.
+Páginas, servidor y base de datos quedan en un solo lugar. En el plan gratis la base de datos
+puede crecer hasta 500 MB; las fotos subidas desde el panel se guardan ahí (borrar prendas
+viejas libera espacio).
 
 ```
 Comprador ──► public/index.html ──► /api/... (src/) ──► Base de datos D1
@@ -38,6 +40,8 @@ No hay cuentas de usuario: el comprador se identifica con su **número de pedido
 | `pedido_items` | Las prendas de cada pedido **con sus características al momento de la compra** (aunque después se borre la prenda) |
 | `transacciones` | Cada intento de pago y cada devolución en Webpay: token, orden de compra, monto, resultado, código de autorización, últimos 4 dígitos, tipo de pago, cuotas y la respuesta completa de Transbank |
 | `reembolsos` | Solicitudes de reembolso: motivo, respuesta del ropero y estado |
+| `intentos_acceso` | Intentos fallidos de entrar al panel o de buscar pedidos (para frenar a quien intenta adivinar) |
+| `ajustes` | Datos internos del servidor, como la llave aleatoria que firma las sesiones del panel |
 
 ---
 
@@ -64,7 +68,7 @@ Las **prendas ya no se escriben en `datos.js`**: se agregan, editan y borran des
 
 ## 3. Probarlo en tu computador
 
-Necesitas [Node.js](https://nodejs.org) 20 o más nuevo y Visual Studio Code.
+Necesitas [Node.js](https://nodejs.org) 22 o más nuevo y Visual Studio Code.
 
 ```bash
 npm install                      # instala lo necesario (una sola vez)
@@ -73,6 +77,12 @@ npm run db:migrar                # crea las tablas en una base de datos local
 npm run db:semilla               # (opcional) carga las 12 prendas de ejemplo
 npm run dev                      # abre http://localhost:8787
 ```
+
+Lo que escribas en `.dev.vars` reemplaza a las variables de `wrangler.jsonc`, solo en tu
+computador. Por eso `.dev.vars.example` deja `WEBPAY_AMBIENTE=integracion` y `URL_PUBLICA` vacía:
+aunque al publicar cambies esas variables en `wrangler.jsonc` (puntos 4 y 5), `npm run dev` sigue
+en modo de pruebas y Webpay te devuelve a `localhost`. La llave de producción de Webpay nunca va
+en `.dev.vars`: va solo en Cloudflare, como secreto.
 
 En tu computador Webpay funciona en **modo de pruebas** (ambiente de integración de Transbank):
 nadie paga de verdad. Para "pagar" usa la tarjeta de prueba de Transbank:
@@ -108,6 +118,10 @@ Panel de voluntarias: `http://localhost:8787/admin.html`, con la `ADMIN_CLAVE` d
    npm run db:migrar:remoto
    npm run db:semilla:remoto           # opcional
    ```
+
+   Cada vez que el proyecto traiga una migración nueva en `migrations/` (por ejemplo
+   `0002_ajustes.sql`), corre `npm run db:migrar:remoto` **antes** de `npm run deploy`.
+   Solo aplica las que faltan.
 4. Guarda la clave del panel (te la pide sin mostrarla en pantalla):
 
    ```bash
@@ -136,8 +150,12 @@ Para revisar la base de datos publicada: panel de Cloudflare → *Storage & Data
 
 ```bash
 npx wrangler d1 execute DB --remote --command "SELECT numero, comprador_nombre, total, estado_pago FROM pedidos ORDER BY id DESC LIMIT 20"
-npx wrangler d1 export DB --remote --output respaldo.sql      # respaldo completo
+npx wrangler d1 export DB --remote --output ../respaldo-ropero.sql   # respaldo completo
 ```
+
+El respaldo queda **fuera** de la carpeta del proyecto (`../`) a propósito: trae nombres,
+correos y teléfonos de las familias, y los datos de quién retira. **Nunca lo subas a GitHub.**
+Por si acaso, `.gitignore` ignora los archivos `respaldo*.sql`.
 
 ---
 
@@ -162,14 +180,27 @@ sigue siendo el de pruebas, el servidor no acepta pagos con Webpay (la tienda mu
 mensaje de error). Así nunca se mezclan credenciales de prueba con cobros reales.
 
 **Reembolsos:** cuando una voluntaria aprueba un reembolso en el panel, el servidor le pide a
-Webpay que devuelva el dinero a la tarjeta. Si Webpay no puede (por ejemplo, pasaron muchos días
-o era tarjeta de débito y el banco no lo permite), el panel muestra el error y deja reintentar o
-marcar la devolución como hecha a mano.
+Webpay que devuelva el dinero a la tarjeta. Si la respuesta de Webpay no llega, el servidor
+pregunta a Transbank si la devolución igual se hizo. Si no se puede confirmar (por ejemplo,
+Transbank no contesta, pasaron muchos días o el banco no lo permite), el panel muestra el error:
+**antes de devolver el dinero a mano, revisa en el portal de Transbank** si la devolución ya
+aparece. Si no aparece, reintenta, o devuelve el dinero a mano y márcalo como devuelto.
 
 **Pagos abandonados:** si alguien entra a Webpay y vuelve a la tienda sin pagar, su pedido se
 anula al instante y las prendas siguen en su carrito. Si cierra la pestaña, cada 10 minutos el
 servidor anula los pedidos que llevan más de 20 minutos sin pagarse y las prendas vuelven al
 catálogo. No se hace ningún cobro: Transbank solo cobra cuando el servidor confirma el pago.
+
+**Pagos sin confirmar:** si al volver de Webpay el servidor no logra saber si el pago se hizo
+(Transbank no contesta), el pedido queda **pendiente** con sus prendas reservadas y la tienda
+le dice al comprador "Estamos confirmando tu pago". Cada 10 minutos el servidor le vuelve a
+preguntar a Transbank: si se pagó, el pedido queda pagado y se mandan los correos; si no, se
+anula. Un pedido así tampoco se anula desde el panel sin preguntarle antes a Transbank.
+
+**Pagos de prueba:** mientras Webpay está en modo de pruebas, cualquiera puede "pagar" con la
+tarjeta de prueba. Esos pedidos aparecen en el panel como **Pago de prueba** (no entró dinero)
+y en el CSV con `integracion` en la columna *Ambiente*. Antes de entregar prendas, revisa que el
+pago no sea de prueba.
 
 ---
 
@@ -191,15 +222,20 @@ Con una cuenta de Gmail (o Google Workspace) del ropero:
 4. Guarda la contraseña de aplicación: `npx wrangler secret put SMTP_CLAVE`
 5. `npm run deploy`
 
-Otro proveedor de correo: cambia `SMTP_HOST`, `SMTP_PUERTO` y `SMTP_SEGURIDAD`
-(`tls` para el puerto 465, `starttls` para el 587).
+Otro proveedor de correo: cambia `SMTP_HOST` y `SMTP_PUERTO`. Tiene que ofrecer conexión
+cifrada directa (**TLS, normalmente el puerto 465**): `SMTP_SEGURIDAD` solo acepta `tls`.
+Con `starttls` (puerto 587) la contraseña podría viajar sin cifrar, así que el servidor no
+manda correos y lo avisa en los registros (*Logs*).
 
 ---
 
 ## 7. Panel de voluntarias (`admin.html`)
 
 - **Prendas:** agregar, editar, publicar/ocultar y borrar. Las fotos se achican solas antes de
-  subirse, así que sirven las fotos tomadas con el teléfono.
+  subirse, así que sirven las fotos tomadas con el teléfono. Si la prenda cambió mientras la
+  editabas (por ejemplo, se vendió), no se guarda: recarga la lista y vuelve a intentarlo.
+  Una prenda que está en un pedido pendiente de pago no se puede borrar, y el código de una
+  prenda que ya estuvo en un pedido no se vuelve a usar.
 - **Pedidos:** lista de retiro con quién está autorizado a retirar; marcar entregado; anular
   pedidos que no se pagaron (las prendas vuelven al catálogo).
 - **Reembolsos:** aprobar o rechazar; al aprobar, las prendas vuelven al catálogo y el dinero se
@@ -207,7 +243,9 @@ Otro proveedor de correo: cambia `SMTP_HOST`, `SMTP_PUERTO` y `SMTP_SEGURIDAD`
 - **Resumen:** cifras de ventas y descarga de todas las ventas en CSV (se abre en Excel).
 
 La clave del panel es el secreto `ADMIN_CLAVE`: no está escrita en ninguna página. Para
-cambiarla, vuelve a correr `npx wrangler secret put ADMIN_CLAVE`.
+cambiarla, vuelve a correr `npx wrangler secret put ADMIN_CLAVE` (las sesiones abiertas se
+cierran). Después de 8 claves incorrectas desde una misma conexión, el panel no deja intentar
+de nuevo durante 15 minutos.
 
 ---
 
@@ -233,8 +271,9 @@ npm run test:e2e    # recorre la tienda y el panel en un navegador (requiere Pla
 ```
 
 Las pruebas usan una imitación local de Webpay y de un servidor de correo, así que no
-necesitan internet ni cobran nada. Si tu `.dev.vars` tiene una `WEBPAY_API_KEY` real, déjala
-vacía mientras corres las pruebas: la imitación solo acepta las credenciales públicas de prueba. Para `test:e2e` en tu computador instala Playwright una vez:
+necesitan internet ni cobran nada. Siempre corren con Webpay en modo de pruebas, sin
+`URL_PUBLICA` y con las credenciales públicas de integración, aunque `wrangler.jsonc` o
+`.dev.vars` digan otra cosa. Para `test:e2e` en tu computador instala Playwright una vez:
 `npm install --no-save playwright && npx playwright install chromium`.
 
 ---

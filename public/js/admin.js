@@ -33,7 +33,9 @@ let prendas = null;        // null = todavía no se cargan
 let pedidos = null;
 let reembolsos = null;
 let editando = null;       // código de la prenda que se está editando (o null si es nueva)
+let versionEditando = "";  // actualizadoEn de esa prenda cuando se abrió: el servidor lo compara al guardar
 let codigoSugerido = "";   // último código que propusimos para una prenda nueva
+let siguienteCodigo = "";  // el que propone el servidor (nunca repite uno que ya estuvo en un pedido)
 let fotoPendiente = null;  // foto ya achicada, esperando que se guarde la prenda
 
 /* ---------- Mensajes flotantes ---------- */
@@ -90,7 +92,9 @@ async function pedir(ruta, { metodo = "GET", json, binario } = {}){
   }
   if (!resp.ok){
     const datos = await leerJson(resp);
-    throw new Error(datos.error || `El servidor respondió con un error (${resp.status}). Intenta de nuevo.`);
+    const error = new Error(datos.error || `El servidor respondió con un error (${resp.status}). Intenta de nuevo.`);
+    error.estado = resp.status;   // por ejemplo 409: la prenda o el pedido cambió
+    throw error;
   }
   return resp;
 }
@@ -240,11 +244,17 @@ function fotoDe(p){
   return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
 }
 
+// Trae las prendas y el código sugerido. Si falla, lanza el error.
+async function leerPrendas(){
+  const datos = await api("/api/admin/productos");
+  prendas = datos.productos || [];
+  siguienteCodigo = typeof datos.siguienteCodigo === "string" ? datos.siguienteCodigo : "";
+}
+
 async function cargarPrendas(){
   if (!prendas) $("#tablaPrendas").innerHTML = htmlCargando();
   try{
-    const datos = await api("/api/admin/productos");
-    prendas = datos.productos || [];
+    await leerPrendas();
     pintarTablaPrendas();
     // Si la voluntaria no ha escrito un código propio, actualizamos la sugerencia
     if (!editando && ($("#fCodigo").value === "" || $("#fCodigo").value === codigoSugerido)){
@@ -306,8 +316,10 @@ function pintarTablaPrendas(){
     </table>`;
 }
 
-// Siguiente código libre del tipo SG-0018
+// Siguiente código libre del tipo SG-0018. Lo calcula el servidor, que también mira
+// los pedidos; si todavía no responde, se calcula con las prendas de la lista.
 function nuevoCodigo(){
+  if (siguienteCodigo) return siguienteCodigo;
   const nums = (prendas || [])
     .map(p => (p.id.match(/^SG-(\d+)$/) || [])[1])
     .filter(Boolean).map(n => parseInt(n, 10));
@@ -317,6 +329,7 @@ function nuevoCodigo(){
 
 function limpiarFormulario(){
   editando = null;
+  versionEditando = "";
   codigoSugerido = nuevoCodigo();
   $("#tituloFormulario").textContent = "Agregar una prenda";
   $("#fCodigo").value  = codigoSugerido;
@@ -338,10 +351,22 @@ function limpiarFormulario(){
   $("#btnGuardar").textContent = "Guardar prenda";
 }
 
-function editarPrenda(id){
-  const p = (prendas || []).find(x => x.id === id);
-  if (!p) return;
-  editando = id;
+// Antes de llenar el formulario se pide la prenda de nuevo al servidor:
+// así no se parte con un stock viejo (pudo venderse con la lista abierta).
+async function editarPrenda(id){
+  try{
+    await leerPrendas();
+    pintarTablaPrendas();
+  }catch(e){ mostrarError(e); return; }
+  const p = prendas.find(x => x.id === id);
+  if (!p){ avisar("Esa prenda ya no existe. Puede que otra voluntaria la haya borrado.", true); return; }
+  llenarFormulario(p);
+}
+
+// Deja el formulario en modo edición con los datos de la prenda p
+function llenarFormulario(p){
+  editando = p.id;
+  versionEditando = p.actualizadoEn || "";
   pestana("nueva");
   $("#tituloFormulario").textContent = "Editar " + p.id;
   $("#fCodigo").value = p.id;
@@ -443,6 +468,14 @@ async function achicarFoto(archivo){
 
 /* ---------- Guardar, publicar y borrar ---------- */
 
+// Número entero escrito por la voluntaria: "4000" o "4.000" (punto de miles) → 4000.
+// Vacío, decimales u otros signos → null, para no guardar $4 ni $0 por error.
+function leerEntero(texto){
+  const t = String(texto ?? "").trim();
+  if (!/^\d+$/.test(t) && !/^\d{1,3}(\.\d{3})+$/.test(t)) return null;
+  return Number(t.replace(/\./g, ""));
+}
+
 // Lee el formulario y revisa lo básico. El servidor revisa todo de nuevo.
 function leerFormulario(){
   const datos = {
@@ -452,8 +485,8 @@ function leerFormulario(){
     marca:  $("#fMarca").value,
     talla:  $("#fTalla").value,
     estado: $("#fEstado").value,
-    precio: Number($("#fPrecio").value),
-    stock:  Number($("#fStock").value),
+    precio: leerEntero($("#fPrecio").value),
+    stock:  leerEntero($("#fStock").value),
     detalle:$("#fDetalle").value.trim(),
     imagen: $("#fImagen").value.trim(),
     publicado: $("#fPublicado").checked
@@ -462,22 +495,24 @@ function leerFormulario(){
     avisar("El código debe tener de 2 a 20 letras, números o guiones (ej: SG-0018).", true); return null;
   }
   if (datos.nombre.length < 2){ avisar("Ponle un nombre a la prenda.", true); return null; }
-  if (!Number.isInteger(datos.precio) || datos.precio < 0 || datos.precio > 1000000){
+  if (datos.precio === null){
+    avisar("Escribe el precio sin puntos ni comas, por ejemplo 4000.", true);
+    $("#fPrecio").focus(); return null;
+  }
+  if (datos.precio > 1000000){
     avisar("El precio debe ser un número entero entre 0 y 1.000.000.", true); return null;
   }
-  if (!Number.isInteger(datos.stock) || datos.stock < 0 || datos.stock > 999){
+  if (datos.stock === null){
+    avisar("Escribe la cantidad solo con números, por ejemplo 1.", true);
+    $("#fStock").focus(); return null;
+  }
+  if (datos.stock > 999){
     avisar("La cantidad debe ser un número entero entre 0 y 999.", true); return null;
   }
   if (datos.imagen && !/^(\/img\/|\/api\/imagenes\/|https:\/\/)/.test(datos.imagen)){
     avisar("La ruta de la foto debe empezar con /img/, /api/imagenes/ o https://", true); return null;
   }
   return datos;
-}
-
-// Solo los campos que el servidor espera de una prenda
-function cuerpoPrenda(p){
-  return { id:p.id, nombre:p.nombre, tipo:p.tipo, marca:p.marca, talla:p.talla, estado:p.estado,
-           precio:p.precio, stock:p.stock, detalle:p.detalle || "", imagen:p.imagen || "", publicado:!!p.publicado };
 }
 
 async function guardarPrenda(){
@@ -487,10 +522,23 @@ async function guardarPrenda(){
   const boton = $("#btnGuardar");
   boton.disabled = true; boton.textContent = "Guardando…";
   try{
-    // 1) Guardar los datos de la prenda
-    const r = eraNueva
-      ? await api("/api/admin/productos", { metodo:"POST", json:datos })
-      : await api("/api/admin/productos/" + encodeURIComponent(editando), { metodo:"PUT", json:datos });
+    // 1) Guardar los datos de la prenda. Al editar se manda la versión que se leyó:
+    //    si la prenda cambió entretanto (se vendió, por ejemplo), el servidor responde 409.
+    let r;
+    try{
+      r = eraNueva
+        ? await api("/api/admin/productos", { metodo:"POST", json:datos })
+        : await api("/api/admin/productos/" + encodeURIComponent(editando),
+                    { metodo:"PUT", json:{ ...datos, actualizadoEn: versionEditando } });
+    }catch(e){
+      if (!eraNueva && e.estado === 409){
+        avisar(e.message, true);
+        limpiarFormulario();   // los datos del formulario están viejos: no se reusan
+        pestana("prendas");    // recarga la lista; con “Editar” se abre la prenda al día
+        return;
+      }
+      throw e;
+    }
     const id = r.producto?.id || datos.id;
 
     // 2) Si hay foto nueva, subirla ahora que la prenda existe
@@ -500,12 +548,14 @@ async function guardarPrenda(){
         await api("/api/admin/productos/" + encodeURIComponent(id) + "/imagen", { metodo:"PUT", binario:foto });
       }catch(e){
         if (e instanceof SesionVencida) return;
-        // La prenda sí quedó guardada: la dejamos abierta para reintentar solo la foto
-        await cargarPrendas();
-        editarPrenda(id);
+        // La prenda sí quedó guardada: el formulario queda editándola (aunque la lista
+        // no se pueda recargar) para reintentar solo la foto, nunca crearla otra vez.
+        if (r.producto) llenarFormulario(r.producto);
+        else await editarPrenda(id);
         ponerFotoPendiente(foto);
         avisar("La prenda se guardó, pero la foto no se pudo subir: " + e.message +
                " Aprieta “Guardar cambios” para intentarlo de nuevo.", true);
+        leerPrendas().then(pintarTablaPrendas, () => {});   // sin tapar el aviso si falla
         return;
       }
     }
@@ -523,16 +573,20 @@ async function guardarPrenda(){
   }
 }
 
+// Ocultar o publicar cambia solo "publicado": nunca toca el stock
 async function alternarPublicado(id){
   const p = (prendas || []).find(x => x.id === id);
   if (!p) return;
   try{
-    await api("/api/admin/productos/" + encodeURIComponent(id), {
-      metodo:"PUT", json:{ ...cuerpoPrenda(p), publicado: !p.publicado }
+    await api("/api/admin/productos/" + encodeURIComponent(id) + "/publicado", {
+      metodo:"POST", json:{ publicado: !p.publicado }
     });
     avisar(p.publicado ? "Prenda oculta del catálogo." : "Prenda publicada en el catálogo.");
-    await cargarPrendas();
-  }catch(e){ mostrarError(e); }
+  }catch(e){
+    mostrarError(e);
+    if (e.estado !== 404 && e.estado !== 409) return;
+  }
+  await cargarPrendas();
 }
 
 async function borrarPrenda(id){
@@ -541,8 +595,11 @@ async function borrarPrenda(id){
     await api("/api/admin/productos/" + encodeURIComponent(id), { metodo:"DELETE" });
     if (editando === id) limpiarFormulario();
     avisar("Prenda borrada.");
-    await cargarPrendas();
-  }catch(e){ mostrarError(e); }
+  }catch(e){
+    mostrarError(e);   // 409: está en un pedido pendiente de pago
+    if (e.estado !== 404 && e.estado !== 409) return;
+  }
+  await cargarPrendas();
 }
 
 /* ================================================================
@@ -591,14 +648,25 @@ function htmlTransacciones(p){
       if (t.tipoReembolso)      partes.push(escapar(t.tipoReembolso === "REVERSED" ? "reversa" : t.tipoReembolso === "NULLIFIED" ? "anulación" : t.tipoReembolso));
       if (t.codigoRespuesta !== null && t.codigoRespuesta !== undefined) partes.push("código " + escapar(t.codigoRespuesta));
       if (t.detalleError)       partes.push("error: " + escapar(t.detalleError));
+      if (t.ambiente === "integracion") partes.push("ambiente de pruebas");
       return `<li>${partes.join(" · ")}</li>`;
     }).join("")}
   </ul></details>`;
 }
 
 // Columna "Pago": método, estado y, si fue Webpay, autorización y tarjeta
+// Pagado con la tarjeta de prueba (Webpay en integración): no entró dinero
+function htmlPagoDePrueba(p){
+  return p.pagoDePrueba
+    ? ` <span class="pastilla roja" title="Se pagó en el ambiente de pruebas de Webpay: no entró dinero real.">Pago de prueba</span>`
+    : "";
+}
+
 function htmlPago(p){
-  let html = `${escapar(traducir(METODO, p.metodoPago))}<br>${pastillaPago(p.estadoPago)}`;
+  let html = `${escapar(traducir(METODO, p.metodoPago))}<br>${pastillaPago(p.estadoPago)}${htmlPagoDePrueba(p)}`;
+  if (p.pagoDePrueba){
+    html += `<br><span class="chico">Tarjeta de prueba: no entró dinero real.</span>`;
+  }
   if (p.estadoPago === "pendiente" && p.metodoPago === "webpay"){
     html += `<br><span class="chico">Esperando el pago en Webpay</span>`;
   }
@@ -708,8 +776,11 @@ async function anularPedido(numero){
   try{
     await api("/api/admin/pedidos/" + encodeURIComponent(numero) + "/anular", { metodo:"POST", json:{ motivo: motivo.trim() } });
     avisar("Pedido anulado. Las prendas volvieron al catálogo.");
-    await cargarPedidos();
-  }catch(e){ mostrarError(e); }
+  }catch(e){
+    mostrarError(e);   // 409: se está pagando o ya no está pendiente
+    if (e.estado !== 409) return;
+  }
+  await cargarPedidos();
 }
 
 /* ================================================================
@@ -745,8 +816,9 @@ function htmlResultadoWebpay(p){
       (${devolucion.tipoReembolso === "REVERSED" ? "reversa" : "anulación"})${r.devueltoEn ? " · " + escapar(fecha(r.devueltoEn)) : ""}</div>`;
   }
   if (r.estado === "aprobado" && r.error){
-    return `<div class="aviso" style="margin-top:12px"><strong>La devolución por Webpay no se pudo hacer:</strong>
-      ${escapar(r.error)}<br>Puedes reintentarla o devolver el dinero a mano y marcarlo como devuelto.</div>`;
+    return `<div class="aviso" style="margin-top:12px"><strong>No pudimos confirmar la devolución por Webpay:</strong>
+      ${escapar(r.error)}<br>Antes de devolver el dinero a mano, revisa en el portal de Transbank si la devolución
+      ya se hizo. Si no aparece, reintenta la devolución por Webpay.</div>`;
   }
   return "";
 }
@@ -773,7 +845,7 @@ function pintarReembolsos(){
       <p><strong>Motivo:</strong> ${escapar(r.motivo)}</p>
       <p style="font-size:.85rem;color:var(--tenue);margin-top:8px">
         Prendas: ${(p.items || []).map(i => escapar(i.id)).join(", ")} ·
-        Pago: ${escapar(traducir(METODO, p.metodoPago))} ${pastillaPago(p.estadoPago)}</p>
+        Pago: ${escapar(traducir(METODO, p.metodoPago))} ${pastillaPago(p.estadoPago)}${htmlPagoDePrueba(p)}</p>
       ${p.metodoPago === "webpay" ? htmlTransacciones(p) : ""}
       ${r.respuesta ? `<p style="margin-top:10px"><strong>Respuesta:</strong> ${escapar(r.respuesta)}</p>` : ""}
       ${htmlResultadoWebpay(p)}
@@ -799,7 +871,8 @@ function pintarReembolsos(){
 // Muestra lo que respondió Webpay al intentar devolver el dinero
 function avisarResultado(r, textoSinWebpay){
   if (r && r.webpay){
-    avisar(r.webpay.mensaje || (r.webpay.ok ? "Webpay devolvió el dinero." : "Webpay no pudo devolver el dinero."), !r.webpay.ok);
+    avisar(r.webpay.mensaje || (r.webpay.ok ? "Webpay devolvió el dinero."
+      : "No pudimos confirmar la devolución. Revisa el portal de Transbank antes de devolver el dinero a mano."), !r.webpay.ok);
   } else {
     avisar(textoSinWebpay);
   }
@@ -825,6 +898,10 @@ async function reintentarDevolucion(numero){
 }
 
 async function marcarDevuelto(numero){
+  // Si fue Webpay, la devolución pudo haberse hecho aunque no llegó la respuesta
+  const p = (reembolsos || []).find(x => x.numero === numero);
+  if (p && p.metodoPago === "webpay" && !confirm("¿Ya revisaste en el portal de Transbank que Webpay no devolvió el dinero?\n" +
+      "Marca como devuelto solo si devolviste el dinero tú misma.")) return;
   try{
     await api("/api/admin/reembolsos/" + encodeURIComponent(numero) + "/devuelto", { metodo:"POST", json:{} });
     avisar("Reembolso marcado como devuelto.");

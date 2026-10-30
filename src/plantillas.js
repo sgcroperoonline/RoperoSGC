@@ -10,11 +10,20 @@ export function escaparHtml(valor) {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-// Fecha en hora de Chile, por ejemplo "4-03-2026, 12:20:00".
+// Se crea una sola vez: crear un formateador nuevo en cada fecha gasta mucha CPU
+// (el plan gratis da 10 ms por petición y el CSV formatea cientos de fechas).
+const PARTES_CHILE = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Santiago", hourCycle: "h23",
+  year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+});
+
+// Fecha en hora de Chile, por ejemplo "04-03-2026 12:20:00".
 export function fechaChile(iso) {
   if (!iso) return "";
   try {
-    return new Date(iso).toLocaleString("es-CL", { timeZone: "America/Santiago" });
+    const p = {};
+    for (const { type, value } of PARTES_CHILE.formatToParts(new Date(iso))) p[type] = value;
+    return `${p.day}-${p.month}-${p.year} ${p.hour}:${p.minute}:${p.second}`;
   } catch {
     return iso;
   }
@@ -118,8 +127,7 @@ export function correoComprador(pedido, origen) {
     ...retiro,
     "",
     plazo,
-    "",
-    `Tienda: ${tienda}`,
+    ...(origen ? ["", `Tienda: ${tienda}`] : []),
     "",
     "Ropero SG · Saint George's College",
   ].join("\n");
@@ -135,7 +143,7 @@ ${parrafos(lineasPago(pedido))}
 <h3 style="margin:16px 0 4px">Retiro</h3>
 ${parrafos(retiro)}
 <p style="margin-top:16px">${escaparHtml(plazo)}</p>
-<p><a href="${escaparHtml(tienda)}">Ir a la tienda</a></p>`);
+${origen ? `<p><a href="${escaparHtml(tienda)}">Ir a la tienda</a></p>` : ""}`);
 
   return { asunto, texto, html };
 }
@@ -162,8 +170,7 @@ export function correoAviso(pedido, origen) {
     "",
     "Pago:",
     ...lineasPago(pedido),
-    "",
-    `Panel de voluntarias: ${panel}`,
+    ...(origen ? ["", `Panel de voluntarias: ${panel}`] : []),
   ].join("\n");
 
   const html = envolverHtml(`
@@ -174,7 +181,7 @@ ${parrafos(contacto)}
 ${tablaPrendasHtml(pedido)}
 <h3 style="margin:16px 0 4px">Pago</h3>
 ${parrafos(lineasPago(pedido))}
-<p style="margin-top:16px"><a href="${escaparHtml(panel)}">Abrir el panel de voluntarias</a></p>`);
+${origen ? `<p style="margin-top:16px"><a href="${escaparHtml(panel)}">Abrir el panel de voluntarias</a></p>` : ""}`);
 
   return { asunto, texto, html };
 }

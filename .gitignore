@@ -6,3 +6,5 @@ node_modules/
 test/.tmp/
 *.log
 .DS_Store
+# Respaldos de la base de datos (traen datos personales: nunca a GitHub)
+respaldo*.sql

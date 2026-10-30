@@ -5,7 +5,13 @@ import { configWebpay } from "./config.js";
 const RUTA = "/rswebpaytransaction/api/webpay/v1.2/transactions";
 
 // Error al hablar con Transbank (red caída, respuesta con error, etc.).
-export class ErrorWebpay extends Error {}
+// estadoHttp: el código HTTP si Transbank alcanzó a responder (null si no hubo respuesta).
+export class ErrorWebpay extends Error {
+  constructor(mensaje, estadoHttp = null) {
+    super(mensaje);
+    this.estadoHttp = estadoHttp;
+  }
+}
 
 // Hace una llamada a Transbank y devuelve su respuesta JSON.
 async function llamar(env, metodo, ruta, cuerpo) {
@@ -13,6 +19,7 @@ async function llamar(env, metodo, ruta, cuerpo) {
   if (config.error) throw new ErrorWebpay(config.error);
 
   let respuesta;
+  let texto;
   try {
     respuesta = await fetch(config.base + RUTA + ruta, {
       method: metodo,
@@ -25,12 +32,13 @@ async function llamar(env, metodo, ruta, cuerpo) {
       // Si Transbank no contesta en 15 segundos, nos rendimos (y no dejamos al comprador esperando).
       signal: AbortSignal.timeout(15000),
     });
+    // El cuerpo también puede cortarse o demorar: se lee dentro del mismo try.
+    texto = await respuesta.text();
   } catch (error) {
     const motivo = error?.name === "TimeoutError" ? "Webpay no respondió a tiempo" : "No se pudo conectar con Webpay";
     throw new ErrorWebpay(`${motivo} (${error?.message || error}).`);
   }
 
-  const texto = await respuesta.text();
   let datos = null;
   try {
     datos = JSON.parse(texto);
@@ -39,7 +47,7 @@ async function llamar(env, metodo, ruta, cuerpo) {
   }
   if (!respuesta.ok) {
     const mensaje = typeof datos?.error_message === "string" ? datos.error_message : texto.slice(0, 200);
-    throw new ErrorWebpay(`Webpay respondió ${respuesta.status}: ${mensaje || "sin detalle"}`);
+    throw new ErrorWebpay(`Webpay respondió ${respuesta.status}: ${mensaje || "sin detalle"}`, respuesta.status);
   }
   if (!datos || typeof datos !== "object") throw new ErrorWebpay("Webpay entregó una respuesta que no se entiende.");
   return datos;
@@ -86,6 +94,9 @@ export function pagoAutorizado(respuesta) {
 export function reembolsoExitoso(respuesta) {
   return respuesta?.type === "REVERSED" || (respuesta?.type === "NULLIFIED" && respuesta?.response_code === 0);
 }
+
+// Estados con los que Transbank dice que el pago NO quedó hecho (no hubo cobro, o se reversó).
+export const ESTADOS_SIN_COBRO = ["FAILED", "REVERSED", "NULLIFIED", "ABORTED"];
 
 // Nombre en palabras del tipo de pago que informa Transbank.
 export const TIPOS_DE_PAGO = {

@@ -19,6 +19,9 @@
    Control (solo para los tests):
      POST /__control   { accion: "reiniciar" }
                        { accion: "fallar", operacion, veces?, status?, mensaje?, procesar? }
+                         (procesar: Transbank alcanzó a hacer el commit o la devolución,
+                          pero la respuesta "se perdió"; sirve para confirmar y reembolsar.
+                          cortar: en "crear", la respuesta se corta a mitad del cuerpo)
                        { accion: "tipoReembolso", tipo: "NULLIFIED" | "REVERSED" }
      GET  /__llamadas  lista de llamadas que hizo nuestro servidor a la API
 
@@ -71,7 +74,8 @@ export async function iniciarMockWebpay() {
         veces: cuerpo.veces ?? 1,
         status: cuerpo.status ?? 500,
         mensaje: cuerpo.mensaje ?? "Error simulado por el mock de Webpay",
-        procesar: Boolean(cuerpo.procesar)   // true: Transbank alcanzó a procesar, pero la respuesta "se perdió"
+        procesar: Boolean(cuerpo.procesar),  // true: Transbank alcanzó a procesar, pero la respuesta "se perdió"
+        cortar: Boolean(cuerpo.cortar)       // true: manda los encabezados y parte del cuerpo, y corta la conexión
       });
       return { ok: true };
     }
@@ -178,6 +182,14 @@ export async function iniciarMockWebpay() {
       llamada.respuesta = datos;
       responderJson(res, status, datos);
     };
+    // Encabezados y el comienzo del cuerpo, y después se corta la conexión
+    responder.cortar = () => {
+      llamada.status = 200;
+      llamada.respuesta = "(cortada)";
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": "500" });
+      res.write('{"token":"');
+      setTimeout(() => res.destroy(), 50);
+    };
 
     if (!operacion) return responder(404, { error_message: "Operación no soportada por el mock" });
 
@@ -204,6 +216,7 @@ export async function iniciarMockWebpay() {
 
   function crear(cuerpo, responder) {
     const falla = tomarFalla("crear");
+    if (falla?.cortar) return responder.cortar();
     if (falla) return responder(falla.status, { error_message: falla.mensaje });
 
     const c = cuerpo && typeof cuerpo === "object" ? cuerpo : {};
@@ -290,7 +303,9 @@ export async function iniciarMockWebpay() {
 
   function reembolsar(tx, cuerpo, responder) {
     const falla = tomarFalla("reembolsar");
-    if (falla) return responder(falla.status, { error_message: falla.mensaje });
+    // procesar: true -> Transbank hace la devolución, pero la respuesta "se pierde" (responde la falla)
+    if (falla && !falla.procesar) return responder(falla.status, { error_message: falla.mensaje });
+    const responderFinal = falla ? () => responder(falla.status, { error_message: falla.mensaje }) : responder;
 
     const monto = cuerpo && typeof cuerpo === "object" ? cuerpo.amount : undefined;
     if (!Number.isInteger(monto) || monto <= 0) return responder(422, { error_message: "amount debe ser un entero mayor que 0" });
@@ -302,10 +317,10 @@ export async function iniciarMockWebpay() {
     if (estado.tipoReembolso === "REVERSED") {
       tx.estado = "REVERSED";
       tx.balance = 0;
-      return responder(200, { type: "REVERSED" });
+      return responderFinal(200, { type: "REVERSED" });
     }
     if (tx.balance === 0) tx.estado = "NULLIFIED";
-    responder(200, {
+    responderFinal(200, {
       type: "NULLIFIED",
       authorization_code: "123456",
       authorization_date: new Date().toISOString(),

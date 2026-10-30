@@ -182,7 +182,9 @@ async function api(ruta, { metodo = "GET", cuerpo } = {}){
   try{ datos = await respuesta.json(); }catch(e){ /* respuesta sin JSON */ }
 
   if (!respuesta.ok){
-    const err = new Error((datos && datos.error) || "Ocurrió un error inesperado. Intenta de nuevo.");
+    const err = new Error((datos && datos.error) || (respuesta.status === 429
+      ? "Demasiados intentos. Espera unos minutos y vuelve a intentarlo."
+      : "Ocurrió un error inesperado. Intenta de nuevo."));
     err.estado = respuesta.status;
     err.datos  = datos;
     throw err;
@@ -610,8 +612,9 @@ function actualizarContador(){
   c.style.display = n ? "grid" : "none";
 }
 
+/* Abrir el carrito no cambia el pedido del checkout: si era una compra directa,
+   sigue siéndolo hasta que se aprieta "Continuar con la entrega". */
 function abrirCarrito(){
-  estado.compraDirecta = null;
   const items = estado.carrito.map(l => {
     const p = buscarPrenda(l.id);
     return p ? { ...p, cant:l.cant } : null;
@@ -663,6 +666,8 @@ function abrirCarrito(){
 function cerrarPanel(){
   $("#capaPanel").innerHTML = "";
   document.body.style.overflow = "";
+  // Si el carrito cambió con el checkout abierto, el resumen muestra lo mismo que se va a cobrar
+  if (!$("#vistaCheckout").classList.contains("oculto")) pintarResumenPedido();
 }
 
 function comprarAhora(id){
@@ -885,9 +890,18 @@ async function confirmarPedido(){
   // Si quedó a medias un pago Webpay anterior, primero se cancela:
   // si no, sus prendas siguen reservadas y parecerían agotadas.
   const anterior = leerPagoEnCurso();
-  if (anterior){
+  if (anterior && anterior.visto){
+    borrarPagoEnCurso();   // ya terminó (rechazado o anulado) y se mostró
+  } else if (anterior){
     const p = await cancelarPagoEnCurso(anterior);
-    if (p && p.estadoPago !== "pendiente"){ borrarPagoEnCurso(); estado.retenerCarrito = false; }
+    if (p && (p.estadoPago === "pendiente" || p.estadoPago === "pagado")){
+      // Ese pago se está confirmando (o ya se pagó): no creamos otro pedido
+      libre(boton);
+      history.replaceState(null, "", "?pedido=" + encodeURIComponent(p.numero) + "&t=" + encodeURIComponent(anterior.token));
+      await mostrarRetorno(p.numero, anterior.token);
+      return;
+    }
+    if (p){ borrarPagoEnCurso(); estado.retenerCarrito = false; }
   }
 
   let r;
@@ -1024,6 +1038,9 @@ async function mostrarRetorno(numero, t){
     }
     pintarConfirmacion(p);
   } else if (p.metodoPago === "webpay" && (p.estadoPago === "rechazado" || p.estadoPago === "anulado")){
+    // Se marca como visto: así no vuelve a avisarse, pero "Intentar de nuevo"
+    // sigue sabiendo si la compra salió del carrito o fue directa.
+    if (esMio) guardarPagoEnCurso({ ...enCurso, visto:true });
     pintarPagoFallido(p);
   } else if (p.estadoPago === "pendiente" && p.metodoPago === "webpay"){
     // Las prendas siguen reservadas: no limpiamos el carrito todavía
@@ -1125,8 +1142,8 @@ function pintarPagoPendiente(p){
       <div class="caja exito">
         <div class="tic espera">…</div>
         <h2>Estamos confirmando tu pago</h2>
-        <p style="color:var(--tenue)">Esto puede tardar unos segundos. Si ya pagaste, no vuelvas a pagar:
-          recarga esta página en un momento.</p>
+        <p style="color:var(--tenue)">Esto puede tardar unos minutos. Si ya pagaste, no vuelvas a pagar:
+          recarga esta página en un momento. Si sigue así, escríbenos a ${escapar(CONFIG.correo)}.</p>
         <div class="numero">${escapar(p.numero)}</div>
       </div>
       <div style="display:flex;gap:11px;flex-wrap:wrap;padding-bottom:60px">
@@ -1191,6 +1208,7 @@ async function cancelarPagoEnCurso(enCurso){
 async function revisarPagoAbandonado(){
   const enCurso = leerPagoEnCurso();
   if (!enCurso) return;
+  if (enCurso.visto){ borrarPagoEnCurso(); return; }   // ese resultado ya se mostró
   const p = await cancelarPagoEnCurso(enCurso);
   if (!p){
     // Sin conexión: no tocamos el carrito (sus prendas siguen reservadas por ese
@@ -1280,6 +1298,8 @@ async function buscarPedido(){
       $("#resultadoPedidos").innerHTML = `
         <div class="aviso">No encontramos un pedido con ese número y ese correo. Revisa que
         coincidan exactamente con los del comprobante.</div>`;
+    } else if (err.estado === 429){
+      $("#resultadoPedidos").innerHTML = `<div class="aviso">${escapar(err.message)}</div>`;
     } else {
       avisar(err.message);
     }
@@ -1305,7 +1325,9 @@ function pastillaPago(estadoPago){
 function pintarPedido(p){
   const dias = diasDesde(p.creadoEn);
   const plazo = estado.config.diasReembolso ?? CONFIG.diasReembolso;
-  const entrega = p.entrega === "entregado" ? "Entregado" : "Por retirar";
+  const entrega = p.entrega === "entregado" ? "Entregado"
+    : ["anulado", "rechazado", "reembolsado"].includes(p.estadoPago) ? "No aplica"
+    : "Por retirar";
 
   const estadoReembolso = p.reembolso ? ({
     solicitado:'<span class="pastilla ambar">Reembolso en revisión</span>',

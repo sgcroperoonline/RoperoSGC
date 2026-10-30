@@ -7,6 +7,8 @@ import {
   cargarPedido, expirarPedidosWebpay, filaPedidoPorNumero, plazoReembolso,
   productoPublico, sentenciasCerrarPendiente,
 } from "./db.js";
+import { anotarIntento, quitarIntento } from "./freno.js";
+import { resolverPagoIncierto } from "./pagos.js";
 import { retornoWebpay } from "./retorno.js";
 import {
   aBase64Url, aHex, ahora, bytesAleatorios, ErrorPublico, igualesSeguro, leerJSON, textoLargo,
@@ -17,6 +19,15 @@ import { crearTransaccion, ErrorWebpay } from "./webpay.js";
 export const rutasPublicas = new Hono();
 
 const NO_ENCONTRADO = "No encontramos un pedido con ese número y ese correo. Revisa que coincidan exactamente con los del comprobante.";
+
+// Freno para quien prueba números de pedido con un correo: 10 fallos cada 15 minutos por IP.
+const FRENO_PEDIDOS = {
+  prefijo: "pedidos:", maximo: 10, ventanaMs: 15 * 60 * 1000,
+  mensaje: "Demasiados intentos. Espera unos minutos y vuelve a intentarlo.",
+};
+
+// Año en hora de Chile (el número de pedido lleva el año en que se hizo la compra).
+const ANIO_CHILE = new Intl.DateTimeFormat("en-US", { timeZone: "America/Santiago", year: "numeric" });
 
 /* ----------------------------------------------------------------
    CONFIGURACIÓN Y CATÁLOGO
@@ -44,20 +55,34 @@ rutasPublicas.get("/productos", async (c) => {
 });
 
 // GET /api/imagenes/:id — foto subida desde el panel.
+// Leer la foto de D1 gasta CPU, así que se guarda en la caché de Cloudflare (caches.default).
+// La llave de la caché lleva la fecha de la foto en la base: si se cambia o se borra la foto,
+// nunca se entrega la antigua. (En *.workers.dev la caché no guarda nada; con dominio propio sí.)
 rutasPublicas.get("/imagenes/:id", async (c) => {
   const id = c.req.param("id").toUpperCase();
-  const fila = FORMATO_CODIGO.test(id)
-    ? await c.env.DB.prepare("SELECT tipo_mime, datos FROM imagenes WHERE producto_id = ?").bind(id).first()
+  const db = c.env.DB;
+  const datos = FORMATO_CODIGO.test(id)
+    ? await db.prepare("SELECT tipo_mime, actualizado_en FROM imagenes WHERE producto_id = ?").bind(id).first()
     : null;
+  if (!datos) throw new ErrorPublico(404, "No encontramos esa foto.");
+
+  const llave = new URL(`/api/imagenes/${encodeURIComponent(id)}?foto=${encodeURIComponent(datos.actualizado_en)}`, c.req.url);
+  const cache = globalThis.caches?.default;
+  const guardada = cache ? await cache.match(llave).catch(() => null) : null;
+  if (guardada) return new Response(guardada.body, guardada);
+
+  const fila = await db.prepare("SELECT datos FROM imagenes WHERE producto_id = ?").bind(id).first();
   if (!fila) throw new ErrorPublico(404, "No encontramos esa foto.");
-  // D1 entrega el BLOB como una lista de números: se convierte a bytes.
-  return new Response(new Uint8Array(fila.datos), {
+  // D1 entrega el BLOB como una lista de números (o como ArrayBuffer): se pasa a bytes de una vez.
+  const respuesta = new Response(new Uint8Array(fila.datos), {
     headers: {
-      "Content-Type": fila.tipo_mime,
+      "Content-Type": datos.tipo_mime,
       // La dirección cambia (?v=…) cada vez que se sube otra foto, así que se puede guardar para siempre.
       "Cache-Control": "public, max-age=31536000, immutable",
     },
   });
+  if (cache) c.executionCtx.waitUntil(cache.put(llave, respuesta.clone()).catch(() => {}));
+  return respuesta;
 });
 
 /* ----------------------------------------------------------------
@@ -128,9 +153,9 @@ rutasPublicas.post("/pedidos", async (c) => {
       retira.tipo, retira.nombre, retira.extra, datos.pago, total, momento, momento),
     // El número sale del id que le dio la base de datos: RSG-2026-1001, RSG-2026-1002, …
     db.prepare(
-      `UPDATE pedidos SET numero = 'RSG-' || strftime('%Y', 'now') || '-' || (1000 + id)
+      `UPDATE pedidos SET numero = 'RSG-' || ? || '-' || (1000 + id)
        WHERE token_acceso = ? RETURNING id, numero`
-    ).bind(tokenAcceso),
+    ).bind(ANIO_CHILE.format(new Date(momento)), tokenAcceso),
     // Copia de las características de cada prenda al momento de comprar.
     ...items.map((i) => db.prepare(
       `INSERT INTO pedido_items (pedido_id, producto_id, nombre, tipo, marca, talla, estado, precio_unitario, cantidad)
@@ -218,14 +243,17 @@ rutasPublicas.on(["GET", "POST"], "/webpay/retorno", retornoWebpay);
    ---------------------------------------------------------------- */
 
 // POST /api/pedidos/buscar  { numero, correo }  ("Mis pedidos")
+// Los números son correlativos: cada búsqueda fallida cuenta para el freno (429).
 rutasPublicas.post("/pedidos/buscar", async (c) => {
   const cuerpo = await leerJSON(c);
+  const intento = await anotarIntento(c, FRENO_PEDIDOS);
   const numero = numeroPedidoValido(cuerpo.numero);
   const correo = correoValido(cuerpo.correo);
   const fila = numero && correo
     ? await c.env.DB.prepare("SELECT id FROM pedidos WHERE numero = ? AND comprador_correo = ?").bind(numero, correo).first()
     : null;
   if (!fila) throw new ErrorPublico(404, NO_ENCONTRADO);
+  await quitarIntento(c.env.DB, intento);
   return c.json({ pedido: await cargarPedido(c.env.DB, fila.id) });
 });
 
@@ -251,16 +279,22 @@ rutasPublicas.get("/pedidos/:numero", async (c) => {
 // El comprador volvió a la tienda sin terminar de pagar en Webpay (botón "Atrás"):
 // se anula el pedido y sus prendas vuelven al catálogo para que pueda comprar de nuevo.
 // Si el pago se está confirmando justo ahora, o el pedido ya no está pendiente, no cambia nada.
+// Si su confirmación quedó a medias, primero se le pregunta a Transbank si se cobró.
 rutasPublicas.post("/pedidos/:numero/cancelar", async (c) => {
   const db = c.env.DB;
   const cuerpo = await leerJSON(c);
   const fila = await filaConToken(db, c.req.param("numero"), cuerpo.t);
   if (fila.metodo_pago === "webpay" && fila.estado_pago === "pendiente") {
-    await db.batch(sentenciasCerrarPendiente(db, fila.id, {
-      nuevoEstado: "anulado",
-      motivo: "Pago abandonado: el comprador volvió a la tienda",
-      estadoTransaccion: "abortada",
+    const motivo = "Pago abandonado: el comprador volvió a la tienda";
+    const resultados = await db.batch(sentenciasCerrarPendiente(db, fila.id, {
+      nuevoEstado: "anulado", motivo, estadoTransaccion: "abortada",
     }));
+    if (!resultados[resultados.length - 1].results.length) {
+      await resolverPagoIncierto(c.env, fila.id, {
+        nuevoEstado: "anulado", motivo, origen: origenPublico(c.env, c.req.url),
+        enSegundoPlano: (promesa) => c.executionCtx.waitUntil(promesa),
+      });
+    }
   }
   return c.json({ pedido: await cargarPedido(db, fila.id) });
 });
@@ -273,12 +307,15 @@ rutasPublicas.post("/pedidos/:numero/reembolso", async (c) => {
   const fila = numero ? await filaPedidoPorNumero(db, numero) : null;
 
   // Se identifica con el token del comprobante o con el correo del pedido.
+  // Con el correo cuenta el mismo freno que en "Mis pedidos" (429).
   let identificado = false;
   if (fila && typeof cuerpo.t === "string" && cuerpo.t && cuerpo.t.length <= 100) {
     identificado = await igualesSeguro(cuerpo.t, fila.token_acceso);
   }
-  if (fila && !identificado && cuerpo.correo !== undefined) {
-    identificado = correoValido(cuerpo.correo) === fila.comprador_correo;
+  if (!identificado && cuerpo.correo !== undefined) {
+    const intento = await anotarIntento(c, FRENO_PEDIDOS);
+    identificado = Boolean(fila) && correoValido(cuerpo.correo) === fila.comprador_correo;
+    if (identificado) await quitarIntento(db, intento);
   }
   if (!identificado) throw new ErrorPublico(404, NO_ENCONTRADO);
 

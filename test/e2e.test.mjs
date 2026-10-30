@@ -68,6 +68,12 @@ function sinErroresDeConsola(errores) {
   assert.deepEqual(errores, [], "la página no debe mostrar errores en la consola");
 }
 
+// Igual, pero ignora los avisos que el navegador anota solo por respuestas que el test provoca
+// a propósito (por ejemplo "status of 409" o una petición cortada: "net::ERR_FAILED")
+function sinErroresSalvo(errores, ...esperados) {
+  sinErroresDeConsola(errores.filter(x => !esperados.some(t => x.includes("Failed to load resource") && x.includes(t))));
+}
+
 async function revisarTextosProhibidos(pagina, donde) {
   const html = (await pagina.content()).toLowerCase();
   for (const palabra of PALABRAS_PROHIBIDAS) {
@@ -92,6 +98,35 @@ async function prendaAdmin(id) {
   return r.datos.productos.find(p => p.id === id);
 }
 
+// Vende una prenda por la API, pagando en el mock de Webpay (como otra familia comprando)
+async function venderPorApi(codigo, cant = 1) {
+  const r = await e.api("/api/pedidos", { metodo: "POST", cuerpo: {
+    items: [{ id: codigo, cant }],
+    comprador: { nombre: "Ana Díaz", correo: "ana@ejemplo.cl", fono: "+56 9 7777 8888" },
+    retira: { tipo: "apoderado" },
+    pago: "webpay"
+  } });
+  assert.equal(r.status, 201, r.texto);
+  await e.pasarPorWebpay(r.datos.webpay, "pagar");
+  assert.equal((await pedidoAdmin(r.datos.numero)).estadoPago, "pagado");
+  return r.datos.numero;
+}
+
+// Entra al panel con la clave y espera a que carguen las prendas
+async function entrarAlPanel(pagina) {
+  await pagina.goto(e.url + "/admin.html");
+  await pagina.fill("#claveIngreso", CLAVE_ADMIN);
+  await pagina.getByRole("button", { name: "Entrar" }).click();
+  await pagina.locator("#panel").waitFor({ state: "visible" });
+  await pagina.locator("#tablaPrendas").getByText("SG-0017").first().waitFor();
+}
+
+// Texto del aviso flotante del panel, cuando dice `texto`
+async function esperarAvisoPanel(pagina, texto) {
+  await pagina.locator("#aviso", { hasText: texto }).waitFor({ state: "visible" });
+  return pagina.locator("#aviso").innerText();
+}
+
 // Espera activa (sin sleeps largos): repite `revisar` hasta que devuelva algo "verdadero"
 async function esperarQue(revisar, descripcion, msMaximo = 20_000) {
   const limite = Date.now() + msMaximo;
@@ -112,8 +147,13 @@ async function agregarAlCarrito(pagina, codigo) {
 
 // Desde el carrito abierto: llena el checkout, confirma y llega a la página de Webpay.
 // Devuelve el número de pedido que muestra Webpay.
-async function pagarConWebpayHastaElBanco(pagina, { nombre, correo, fono }) {
+async function pagarConWebpayHastaElBanco(pagina, datos) {
   await pagina.getByRole("button", { name: "Continuar con la entrega" }).click();
+  return confirmarConWebpay(pagina, datos);
+}
+
+// Con el checkout a la vista: llena los datos, confirma y llega a la página de Webpay
+async function confirmarConWebpay(pagina, { nombre, correo, fono }) {
   await pagina.locator("#vistaCheckout").waitFor({ state: "visible" });
   await pagina.fill("#compNombre", nombre);
   await pagina.fill("#compCorreo", correo);
@@ -242,6 +282,53 @@ test("si vuelve de Webpay con «Atrás», el pago se cancela y puede comprar de 
   sinErroresDeConsola(errores);
 });
 
+test("compra directa con el carrito abierto entremedio: se cobra lo que muestra el resumen", OPC, async () => {
+  const { pagina, errores } = await nuevaPagina();
+  await pagina.goto(e.url + "/");
+  await agregarAlCarrito(pagina, "SG-0013");   // corbata de $2.000 en el carrito
+  await pagina.getByRole("button", { name: "Seguir comprando", exact: true }).click();
+
+  // "Comprar ahora" en el pantalón de $5.000
+  const tarjeta = pagina.locator("#grillaPrendas article.prenda", { hasText: "SG-0011" });
+  await tarjeta.getByRole("button", { name: "Ver prenda" }).click();
+  await pagina.getByRole("button", { name: "Comprar ahora" }).click();
+  await pagina.locator("#vistaCheckout").waitFor({ state: "visible" });
+
+  // Abre el carrito y vuelve sin continuar desde ahí
+  await pagina.getByRole("button", { name: "Abrir carrito" }).click();
+  await pagina.getByRole("button", { name: "Seguir comprando", exact: true }).click();
+  const resumen = await pagina.locator("#resumenPedido").innerText();
+  assert.ok(resumen.includes("Pantalón gris media") && resumen.includes("$5.000"), resumen);
+  assert.ok(!resumen.includes("Corbata"), "el resumen no cambia a lo del carrito");
+
+  const numero = await confirmarConWebpay(pagina, {
+    nombre: "Rosa Lagos", correo: "rosa@ejemplo.cl", fono: "+56 9 1212 3434"
+  });
+  assert.equal((await pagina.textContent("#monto")).trim(), "$5.000", "Webpay cobra lo que mostraba el resumen");
+  const p = await pedidoAdmin(numero);
+  assert.deepEqual(p.items.map(i => i.id), ["SG-0011"]);
+  assert.equal(p.total, 5000);
+
+  // Anula en Webpay: se muestra una vez que no se completó…
+  await pagina.getByRole("button", { name: "Anular compra", exact: true }).click();
+  await pagina.waitForURL(u => u.origin === new URL(e.url).origin);
+  await pagina.getByText("El pago no se completó").first().waitFor();
+  assert.equal((await prendaAdmin("SG-0011")).stock, 1, "el pantalón vuelve al catálogo");
+  const carrito = await pagina.evaluate(() => JSON.parse(localStorage.getItem("ropero_carrito") || "[]"));
+  assert.deepEqual(carrito, [{ id: "SG-0013", cant: 1 }], "la compra directa no toca el carrito");
+
+  // …y no vuelve a avisarse al salir de la tienda y regresar
+  await pagina.getByRole("button", { name: "Volver al catálogo", exact: true }).click();
+  await pagina.goto(e.url + "/pauta.html");
+  await pagina.goBack();
+  await pagina.locator("#grillaPrendas article.prenda").first().waitFor();
+  await pagina.waitForLoadState("networkidle");
+  const aviso = (await pagina.locator("#avisoFlotante").count()) ? await pagina.locator("#avisoFlotante").innerText() : "";
+  assert.ok(!aviso.includes("no se completó"), `no debe repetirse el aviso: "${aviso}"`);
+  assert.equal(await pagina.evaluate(() => sessionStorage.getItem("ropero_pago_en_curso")), null);
+  sinErroresDeConsola(errores);
+});
+
 test("Mis pedidos: buscar la compra y pedir un reembolso", OPC, async () => {
   assert.ok(compra, "necesita la compra del primer test");
   const { pagina, errores } = await nuevaPagina();
@@ -352,6 +439,98 @@ test("panel: ingresar, crear una prenda con foto achicada y aprobar el reembolso
   assert.equal((await prendaAdmin("SG-0004")).stock, 1, "la prenda vuelve al catálogo");
   assert.equal(e.webpay.llamadasDe("reembolsar").filter(l => l.status === 200).length, 1);
   sinErroresDeConsola(errores);
+});
+
+test("panel: precio con punto de miles, edición con datos viejos, Ocultar/Publicar sin revivir stock y foto que no subió", OPC, async () => {
+  const { pagina, errores } = await nuevaPagina();
+  await entrarAlPanel(pagina);
+  await pagina.locator('.pestanas button[data-p="nueva"]').click();
+  const codigo = await pagina.inputValue("#fCodigo");
+  assert.match(codigo, /^SG-\d{4}$/);
+
+  await pagina.fill("#fNombre", "Polerón azul de deportes");
+  await pagina.selectOption("#fTipo", "Buzo");
+  await pagina.fill("#fStock", "2");
+
+  // Precio vacío: no se guarda como $0
+  await pagina.fill("#fPrecio", "");
+  await pagina.click("#btnGuardar");
+  await esperarAvisoPanel(pagina, "Escribe el precio");
+  assert.equal(await prendaAdmin(codigo), undefined, "sin precio no se crea la prenda");
+
+  // "4.000" (como se escribe en Chile) se guarda como $4.000, no como $4
+  await pagina.fill("#fPrecio", "4.000");
+  await pagina.click("#btnGuardar");
+  const creada = await esperarQue(() => prendaAdmin(codigo), "que se cree la prenda");
+  assert.equal(creada.precio, 4000);
+  assert.equal(creada.stock, 2);
+
+  // Abre "Editar" y, mientras tanto, otra familia compra una unidad
+  const fila = pagina.locator("#tablaPrendas tr", { hasText: codigo });
+  await fila.getByRole("button", { name: "Editar" }).click();
+  await pagina.locator("#tituloFormulario", { hasText: "Editar " + codigo }).waitFor();
+  assert.equal(await pagina.inputValue("#fStock"), "2");
+  assert.equal(await pagina.inputValue("#fPrecio"), "4000");
+  await venderPorApi(codigo);
+  await pagina.fill("#fPrecio", "3500");
+  await pagina.click("#btnGuardar");
+  await esperarAvisoPanel(pagina, "cambió mientras la editabas");
+  let prenda = await prendaAdmin(codigo);
+  assert.equal(prenda.stock, 1, "guardar con datos viejos no pisa el stock");
+  assert.equal(prenda.precio, 4000);
+
+  // La lista quedó al día (stock 1). Se vende la última unidad con la lista abierta…
+  await esperarQue(async () => (await fila.locator("td").nth(7).innerText()).trim() === "1", "la lista recargada");
+  await venderPorApi(codigo);
+  assert.equal((await prendaAdmin(codigo)).stock, 0);
+
+  // …y Ocultar/Publicar desde esa lista vieja no la devuelve al catálogo
+  await fila.getByRole("button", { name: "Ocultar" }).click();
+  await esperarQue(async () => (await prendaAdmin(codigo)).publicado === false, "que la prenda quede oculta");
+  await fila.getByRole("button", { name: "Publicar" }).click();
+  await esperarQue(async () => (await prendaAdmin(codigo)).publicado === true, "que la prenda quede publicada");
+  prenda = await prendaAdmin(codigo);
+  assert.equal(prenda.stock, 0, "la prenda vendida sigue sin stock");
+  const catalogo = await e.api("/api/productos");
+  const enTienda = catalogo.datos.productos.find(p => p.id === codigo);
+  assert.ok(!enTienda || enTienda.stock === 0, "la tienda no la ofrece de nuevo");
+
+  // Los pagos hechos con la tarjeta de prueba se marcan en la lista de pedidos
+  await pagina.locator('.pestanas button[data-p="pedidos"]').click();
+  await pagina.locator("#tablaPedidos tr", { hasText: codigo }).first()
+    .locator(".pastilla", { hasText: "Pago de prueba" }).waitFor();
+
+  // Prenda nueva con foto y se corta la red justo después de crearla (falla la foto y
+  // también recargar la lista): el formulario queda editándola para reintentar solo la foto
+  await pagina.locator('.pestanas button[data-p="nueva"]').click();
+  const codigo2 = await pagina.inputValue("#fCodigo");
+  assert.match(codigo2, /^SG-\d{4}$/);
+  assert.notEqual(codigo2, codigo);
+  await pagina.fill("#fNombre", "Falda gris plisada");
+  await pagina.selectOption("#fTipo", "Falda");
+  await pagina.fill("#fPrecio", "6000");
+  await pagina.fill("#fStock", "1");
+  await pagina.setInputFiles("#fArchivo", { name: "falda.png", mimeType: "image/png", buffer: crearPng(300, 200) });
+  await pagina.locator("#vistaPrevia img").waitFor();
+
+  const sinRed = u => u.pathname === "/api/admin/productos" || /^\/api\/admin\/productos\/[^/]+\/imagen$/.test(u.pathname);
+  const cortar = ruta => (ruta.request().method() === "POST" ? ruta.continue() : ruta.abort());
+  await pagina.route(sinRed, cortar);
+  await pagina.click("#btnGuardar");
+  await esperarAvisoPanel(pagina, "la foto no se pudo subir");
+  await pagina.locator("#tituloFormulario", { hasText: "Editar " + codigo2 }).waitFor();
+  assert.equal(await pagina.locator("#btnGuardar").innerText(), "Guardar cambios");
+  assert.equal(await pagina.locator("#fCodigo").evaluate(el => el.readOnly), true);
+  assert.equal((await prendaAdmin(codigo2)).imagen, "", "la prenda quedó guardada, todavía sin foto");
+  await pagina.unroute(sinRed, cortar);
+
+  // Vuelve la red: "Guardar cambios" sube la foto, sin intentar crear la prenda otra vez
+  await pagina.click("#btnGuardar");
+  await esperarAvisoPanel(pagina, "Prenda actualizada");
+  const falda = await prendaAdmin(codigo2);
+  assert.ok(falda.imagen.startsWith(`/api/imagenes/${codigo2}`), falda.imagen);
+  assert.equal(falda.precio, 6000);
+  sinErroresSalvo(errores, "status of 409", "net::ERR_FAILED");
 });
 
 /* ================================================================

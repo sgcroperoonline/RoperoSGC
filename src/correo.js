@@ -1,7 +1,7 @@
 // Envío de correos por SMTP con worker-mailer.
 // Siempre se llama dentro de ctx.waitUntil: si el correo falla, el pedido igual queda bien.
 import { LogLevel, WorkerMailer } from "worker-mailer";
-import { correoActivo, destinoAvisos, opcionesSmtp, remitenteCorreo } from "./config.js";
+import { correoActivo, correoConfigurado, destinoAvisos, errorSmtp, opcionesSmtp, remitenteCorreo } from "./config.js";
 import { cargarPedido } from "./db.js";
 import { correoAviso, correoComprador } from "./plantillas.js";
 
@@ -13,7 +13,10 @@ const nombreSeguro = (nombre) => String(nombre || "").replace(/["\\\r\n]/g, "").
  * Nunca lanza errores: si algo falla, lo deja anotado en los registros (console.error).
  */
 export async function enviarCorreosPedido(env, pedidoId, origen) {
-  if (!correoActivo(env)) return;
+  if (!correoActivo(env)) {
+    if (correoConfigurado(env)) console.error(errorSmtp(env));
+    return;
+  }
   try {
     const pedido = await cargarPedido(env.DB, pedidoId, true);
     if (!pedido) return;

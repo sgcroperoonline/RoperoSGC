@@ -3,12 +3,15 @@
 // ----------------------------------------------------------------
 // Las páginas (HTML, CSS, JS, fotos) las entrega Cloudflare directo
 // desde /public. Este archivo atiende solo lo que empieza con /api/
-// y la tarea programada (cron) que anula pagos Webpay abandonados.
+// y la tarea programada (cron) que anula pagos Webpay abandonados y vuelve a
+// preguntarle a Transbank por los pagos con resultado incierto.
 //
 //   src/pedidos.js    catálogo, pedidos, "Mis pedidos", reembolsos
 //   src/retorno.js    vuelta desde Webpay
+//   src/pagos.js      confirmación de pagos y pagos con resultado incierto
 //   src/admin.js      panel de voluntarias
 //   src/auth.js       clave del panel y sesiones
+//   src/freno.js      freno contra quien intenta adivinar (clave, pedidos ajenos)
 //   src/webpay.js     conexión con Transbank
 //   src/correo.js     correos (con src/plantillas.js)
 //   src/db.js         consultas compartidas a la base de datos
@@ -18,6 +21,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { rutasAdmin } from "./admin.js";
 import { expirarPedidosWebpay } from "./db.js";
+import { resolverPagosInciertos } from "./pagos.js";
 import { rutasPublicas } from "./pedidos.js";
 import { ErrorPublico, haceMs, UN_DIA_MS } from "./util.js";
 
@@ -59,12 +63,21 @@ app.onError((error, c) => {
 });
 
 // Tarea programada (cada 10 minutos, ver "triggers" en wrangler.jsonc).
-async function scheduled(_evento, env) {
+async function scheduled(_evento, env, ctx) {
   try {
     const anulados = await expirarPedidosWebpay(env);
     if (anulados) console.log(`Cron: ${anulados} pedido(s) Webpay sin pagar se anularon y sus prendas volvieron al catálogo.`);
   } catch (error) {
     console.error("Cron: no se pudieron anular los pedidos Webpay vencidos:", error);
+  }
+  try {
+    // Pagos cuya confirmación quedó a medias: se le pregunta a Transbank si se cobraron.
+    const { pagado, anulado, incierto } = await resolverPagosInciertos(env, (promesa) => ctx.waitUntil(promesa));
+    if (pagado || anulado || incierto) {
+      console.log(`Cron: pagos inciertos -> ${pagado} pagado(s), ${anulado} anulado(s), ${incierto} todavía sin respuesta de Transbank.`);
+    }
+  } catch (error) {
+    console.error("Cron: no se pudieron revisar los pagos Webpay inciertos:", error);
   }
   try {
     // Los intentos fallidos de entrar al panel se guardan solo un día.

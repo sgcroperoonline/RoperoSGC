@@ -5,10 +5,8 @@
 //   4. Atípico:   token_ws Y TBK_TOKEN juntos          -> pago inválido, NO se confirma
 // Siempre termina redirigiendo (303) a la tienda, que muestra el resultado.
 import { origenPublico } from "./config.js";
-import { enviarCorreosPedido } from "./correo.js";
-import { limiteReserva, marcarExpiradaSiSigueIniciada, sentenciasCerrarPendiente } from "./db.js";
-import { ahora } from "./util.js";
-import { confirmarTransaccion, estadoTransaccion, pagoAutorizado } from "./webpay.js";
+import { marcarExpiradaSiSigueIniciada, sentenciasCerrarPendiente } from "./db.js";
+import { confirmarConReserva, reservarConfirmacion } from "./pagos.js";
 
 const irAPedido = (c, tx) =>
   c.redirect(`/?pedido=${encodeURIComponent(tx.numero)}&t=${encodeURIComponent(tx.token_acceso)}`, 303);
@@ -50,44 +48,6 @@ function buscarTransaccion(db, donde, ...valores) {
   ).bind(...valores).first();
 }
 
-// Datos útiles de la respuesta de Transbank, listos para guardar.
-function camposRespuesta(r) {
-  const texto = (valor, largo = 40) => (valor === undefined || valor === null ? null : String(valor).slice(0, largo));
-  const entero = (valor) => (Number.isInteger(valor) ? valor : null);
-  // Transbank solo manda los últimos 4 dígitos; igual se recortan por seguridad.
-  const ultimos4 = r?.card_detail?.card_number ? String(r.card_detail.card_number).replace(/\D/g, "").slice(-4) : null;
-  let json = null;
-  if (r) {
-    const copia = JSON.parse(JSON.stringify(r));
-    if (copia.card_detail && typeof copia.card_detail === "object") copia.card_detail.card_number = ultimos4;
-    json = JSON.stringify(copia).slice(0, 4000);
-  }
-  return {
-    codigoRespuesta: entero(r?.response_code),
-    codigoAutorizacion: texto(r?.authorization_code, 20),
-    tipoPago: texto(r?.payment_type_code, 5),
-    cuotas: entero(r?.installments_number),
-    tarjeta: ultimos4,
-    fechaTransaccion: texto(r?.transaction_date),
-    fechaContable: texto(r?.accounting_date, 10),
-    vci: texto(r?.vci, 10),
-    json,
-  };
-}
-
-// Actualiza el intento de pago con la respuesta de Transbank.
-function sentenciaTransaccion(db, tx, estado, respuesta, detalleError, momento, soloSiIniciada) {
-  const d = camposRespuesta(respuesta);
-  return db.prepare(
-    `UPDATE transacciones
-     SET estado = ?, codigo_respuesta = ?, codigo_autorizacion = ?, tipo_pago = ?, cuotas = ?,
-         tarjeta_ultimos4 = ?, fecha_transaccion = ?, fecha_contable = ?, vci = ?, respuesta_json = ?,
-         detalle_error = ?, actualizado_en = ?
-     WHERE id = ?${soloSiIniciada ? " AND estado = 'iniciada'" : ""}`
-  ).bind(estado, d.codigoRespuesta, d.codigoAutorizacion, d.tipoPago, d.cuotas, d.tarjeta, d.fechaTransaccion,
-    d.fechaContable, d.vci, d.json, detalleError ? String(detalleError).slice(0, 500) : null, momento, tx.id);
-}
-
 /* ---------------- Caso 1: confirmar el pago ---------------- */
 async function confirmarPago(c, tx) {
   const env = c.env;
@@ -103,77 +63,29 @@ async function confirmarPago(c, tx) {
   }
 
   // Reserva para confirmar (ver db.js): solo una petición a la vez puede confirmar este pago,
-  // y mientras tanto nadie puede anular el pedido.
-  const momento = ahora();
-  const reserva = await db.prepare(
-    `UPDATE transacciones SET actualizado_en = ?2
-     WHERE id = ?1 AND estado = 'iniciada'
-       AND NOT (actualizado_en > creado_en AND actualizado_en > ?3)
-       AND EXISTS (SELECT 1 FROM pedidos WHERE id = transacciones.pedido_id AND estado_pago = 'pendiente')`
-  ).bind(tx.id, momento, limiteReserva(momento)).run();
-  if (!reserva.meta.changes) {
+  // y desde ahora nadie puede anular el pedido sin preguntarle antes a Transbank.
+  const reserva = await reservarConfirmacion(db, tx.id);
+  if (!reserva) {
     // Otra petición lo está confirmando ahora (la tienda mostrará "Estamos confirmando tu pago"),
     // o el pedido se anuló recién.
     await marcarExpiradaSiSigueIniciada(db, tx.id);
     return irAPedido(c, tx);
   }
 
-  let respuesta = null;
-  let errorConfirmar = null;
-  try {
-    respuesta = await confirmarTransaccion(env, tx.token);
-  } catch (error) {
-    errorConfirmar = error?.message || String(error);
-    console.error(`Falló la confirmación Webpay del pedido ${tx.numero}:`, errorConfirmar);
-    // Puede que el cobro sí se haya hecho y se perdiera la respuesta: se pregunta el estado.
-    try {
-      respuesta = await estadoTransaccion(env, tx.token);
-    } catch (error2) {
-      errorConfirmar += ` | Estado: ${error2?.message || error2}`;
-      respuesta = null;
-    }
-  }
-
-  const cuando = ahora();
-
-  if (respuesta && pagoAutorizado(respuesta)) {
-    // ¡Pagado! Transacción autorizada y pedido pagado, juntos.
-    const [, pedido] = await db.batch([
-      sentenciaTransaccion(db, tx, "autorizada", respuesta, null, cuando, false),
-      db.prepare(
-        `UPDATE pedidos SET estado_pago = 'pagado', pagado_en = ?, actualizado_en = ?
-         WHERE id = ? AND estado_pago = 'pendiente' RETURNING id`
-      ).bind(cuando, cuando, tx.pedido_id),
-    ]);
-    if (pedido.results.length) {
-      c.executionCtx.waitUntil(enviarCorreosPedido(env, tx.pedido_id, origenPublico(env, c.req.url)));
-    } else {
-      const actual = await db.prepare("SELECT estado_pago FROM pedidos WHERE id = ?").bind(tx.pedido_id).first();
-      if (actual?.estado_pago !== "pagado") {
-        // No debería pasar gracias a la reserva, pero si pasa queda a la vista en el panel.
-        const aviso = "Webpay autorizó el pago, pero el pedido ya estaba anulado: hay que devolver el dinero al comprador.";
-        console.error(`ALERTA pedido ${tx.numero}: ${aviso}`);
-        await db.prepare("UPDATE transacciones SET detalle_error = ? WHERE id = ?").bind(aviso, tx.id).run();
-      }
-    }
-    return irAPedido(c, tx);
-  }
-
-  // Rechazado por el banco (Transbank contestó, pero no autorizó) o error al confirmar.
-  // La transacción se cierra y las prendas vuelven al catálogo, todo junto.
-  const estado = errorConfirmar ? "error" : "rechazada";
-  const motivo = errorConfirmar ? "No se pudo confirmar el pago en Webpay" : "Pago rechazado en Webpay";
-  await db.batch([
-    sentenciaTransaccion(db, tx, estado, respuesta, errorConfirmar, cuando, true),
-    ...sentenciasCerrarPendiente(db, tx.pedido_id, { nuevoEstado: "rechazado", motivo, momento: cuando }),
-  ]);
+  // Pagado, rechazado por el banco o, si Transbank no contesta, pendiente hasta saberlo.
+  await confirmarConReserva(env, tx, reserva, {
+    nuevoEstado: "rechazado",
+    motivo: "Pago rechazado en Webpay",
+    origen: origenPublico(env, c.req.url),
+    enSegundoPlano: (promesa) => c.executionCtx.waitUntil(promesa),
+  });
   return irAPedido(c, tx);
 }
 
 /* -------- Casos 2, 3 y 4: el pago no se hizo, se anula el pedido -------- */
 async function cerrarSinPagar(c, tx, estadoTransaccion, motivo) {
-  // Si alguien está confirmando este pago justo ahora, o el pedido ya no está pendiente,
-  // estas sentencias no cambian nada (ver db.js).
+  // Si alguien empezó a confirmar este pago, o el pedido ya no está pendiente, estas
+  // sentencias no cambian nada (ver db.js); si quedó a medias, lo resuelve el cron.
   await c.env.DB.batch(sentenciasCerrarPendiente(c.env.DB, tx.pedido_id, {
     nuevoEstado: "anulado", motivo, estadoTransaccion,
   }));

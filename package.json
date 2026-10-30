@@ -5,7 +5,7 @@
   "description": "Tienda online del Ropero SG (Saint George's College): catálogo, pedidos y pagos con Webpay Plus.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "dev": "wrangler dev",

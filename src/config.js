@@ -51,22 +51,41 @@ export function minutosExpiraWebpay(env) {
   return valor !== "" && Number.isFinite(minutos) && minutos >= 0 ? minutos : 20;
 }
 
-// Los correos funcionan solo si están el servidor, el usuario y la contraseña.
-export function correoActivo(env) {
+const seguridadSmtp = (env) => texto(env.SMTP_SEGURIDAD).toLowerCase() || "tls";
+
+/**
+ * Motivo por el que la configuración del correo no se puede usar (o null si está bien).
+ * Solo se acepta "tls" (puerto 465): con "starttls" worker-mailer manda la contraseña
+ * sin cifrar si el servidor no ofrece STARTTLS. "ninguna" existe solo para las pruebas
+ * automáticas, con un servidor de correo en el mismo computador.
+ */
+export function errorSmtp(env) {
+  const seguridad = seguridadSmtp(env);
+  if (seguridad === "tls") return null;
+  const host = texto(env.SMTP_HOST).toLowerCase();
+  if (seguridad === "ninguna" && (host === "127.0.0.1" || host === "localhost")) return null;
+  return `SMTP_SEGURIDAD="${seguridad}" no se acepta: usa "tls" (puerto 465). Los correos quedan desactivados.`;
+}
+
+// ¿Están el servidor, el usuario y la contraseña del correo?
+export function correoConfigurado(env) {
   return Boolean(texto(env.SMTP_HOST) && texto(env.SMTP_USUARIO) && texto(env.SMTP_CLAVE));
 }
 
-// Opciones para worker-mailer según SMTP_SEGURIDAD: tls | starttls | ninguna.
+// Los correos funcionan solo si están configurados y de forma segura.
+export function correoActivo(env) {
+  return correoConfigurado(env) && !errorSmtp(env);
+}
+
+// Opciones para worker-mailer según SMTP_SEGURIDAD: tls (o ninguna, solo en pruebas).
 export function opcionesSmtp(env) {
-  const seguridad = texto(env.SMTP_SEGURIDAD).toLowerCase() || "tls";
-  const puertoPorDefecto = { tls: 465, starttls: 587, ninguna: 25 }[seguridad] || 465;
-  const puerto = parseInt(texto(env.SMTP_PUERTO), 10) || puertoPorDefecto;
+  const seguridad = seguridadSmtp(env);
+  const puerto = parseInt(texto(env.SMTP_PUERTO), 10) || (seguridad === "ninguna" ? 25 : 465);
   return {
     host: texto(env.SMTP_HOST),
     port: puerto,
-    // "ninguna" (sin cifrar) existe solo para las pruebas automáticas.
-    secure: seguridad !== "starttls" && seguridad !== "ninguna",
-    startTls: seguridad === "starttls",
+    secure: seguridad === "tls",
+    startTls: false,
     credentials: { username: texto(env.SMTP_USUARIO), password: texto(env.SMTP_CLAVE) },
     authType: "plain",
     socketTimeoutMs: 15000,
@@ -85,8 +104,9 @@ export function destinoAvisos(env) {
 }
 
 // Dirección pública de la tienda: URL_PUBLICA o, si está vacía, la de la petición.
+// En el cron no hay petición: sin URL_PUBLICA devuelve "" (los correos van sin links).
 export function origenPublico(env, urlPeticion) {
   const publica = texto(env.URL_PUBLICA).replace(/\/+$/, "");
   if (/^https?:\/\/[^\s"'<>]+$/i.test(publica)) return publica;
-  return new URL(urlPeticion).origin;
+  return urlPeticion ? new URL(urlPeticion).origin : "";
 }

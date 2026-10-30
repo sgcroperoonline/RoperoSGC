@@ -223,8 +223,14 @@ export async function levantarEntorno({ variables = {} } = {}) {
     const puerto = await puertoLibre();
     const puertoInspector = await puertoLibre();
     entorno.url = `http://127.0.0.1:${puerto}`;
+    // Webpay en pruebas y sin URL_PUBLICA, pase lo que pase en wrangler.jsonc o .dev.vars
+    // (al publicar se cambian ahí, y el mock solo acepta las credenciales de integración).
     entorno.variables = {
       ADMIN_CLAVE: CLAVE_ADMIN,
+      WEBPAY_AMBIENTE: "integracion",
+      WEBPAY_CODIGO_COMERCIO: "597055555532",
+      WEBPAY_API_KEY: "",
+      URL_PUBLICA: "",
       WEBPAY_URL_BASE: entorno.webpay.url,
       SMTP_HOST: "127.0.0.1",
       SMTP_PUERTO: String(entorno.smtp.puerto),

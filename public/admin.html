@@ -139,9 +139,11 @@
 
         <div class="dos">
           <div class="campo"><label for="fPrecio">Precio en pesos</label>
-            <input id="fPrecio" type="number" min="0" max="1000000" step="500"></div>
+            <input id="fPrecio" type="text" inputmode="numeric" maxlength="9" autocomplete="off" placeholder="4000">
+            <p class="pista">Solo números, sin puntos: 4000.</p></div>
           <div class="campo"><label for="fStock">Cantidad disponible</label>
-            <input id="fStock" type="number" min="0" max="999" step="1"><p class="pista">Casi siempre 1: son prendas únicas.</p></div>
+            <input id="fStock" type="text" inputmode="numeric" maxlength="3" autocomplete="off" placeholder="1">
+            <p class="pista">Casi siempre 1: son prendas únicas.</p></div>
         </div>
 
         <div class="campo">

@@ -1,5 +1,6 @@
 // Configuración de Cloudflare Workers para Ropero SG.
-// Plan gratuito: sin "arranque en frío", 100.000 visitas al día y base de datos D1 de 5 GB.
+// Plan gratuito: sin "arranque en frío", 100.000 peticiones al servidor por día y una base de datos
+// D1 de hasta 500 MB (5 GB es el total de la cuenta). Las fotos subidas desde el panel se guardan ahí.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "ropero-sg",
@@ -24,10 +25,12 @@
     }
   ],
 
-  // Cada 10 minutos se anulan los pagos Webpay abandonados y las prendas vuelven al catálogo.
+  // Cada 10 minutos se anulan los pagos Webpay abandonados (las prendas vuelven al catálogo)
+  // y se le vuelve a preguntar a Transbank por los pagos que quedaron sin confirmar.
   "triggers": { "crons": ["*/10 * * * *"] },
 
   // Variables públicas (no secretas). Las claves van con:  npx wrangler secret put NOMBRE
+  // SMTP_SEGURIDAD solo acepta "tls" (puerto 465). En tu computador, .dev.vars reemplaza estos valores.
   "vars": {
     "WEBPAY_AMBIENTE": "integracion",
     "WEBPAY_CODIGO_COMERCIO": "597055555532",
