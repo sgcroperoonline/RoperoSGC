@@ -7,7 +7,8 @@ import {
   cargarPedido, expirarPedidosWebpay, filaPedidoPorNumero, plazoReembolso,
   productoPublico, sentenciasCerrarPendiente,
 } from "./db.js";
-import { anotarIntento, quitarIntento } from "./freno.js";
+import { secretoDeSesiones } from "./auth.js";
+import { anotarIntento, quitarIntento, redDeIp } from "./freno.js";
 import { resolverPagoIncierto } from "./pagos.js";
 import { retornoWebpay } from "./retorno.js";
 import {
@@ -25,6 +26,34 @@ const FRENO_PEDIDOS = {
   prefijo: "pedidos:", maximo: 10, ventanaMs: 15 * 60 * 1000,
   mensaje: "Demasiados intentos. Espera unos minutos y vuelve a intentarlo.",
 };
+
+// Máximo de pagos Webpay sin terminar desde una misma conexión a internet.
+// Evita que alguien reserve todo el catálogo dejando pagos a medias (cada uno reserva sus
+// prendas hasta 20 minutos). Una familia normal tiene como mucho uno: la tienda cancela
+// el pago anterior antes de crear otro. Familias que comparten el Wi-Fi del colegio
+// comparten la conexión, por eso el límite no es 1.
+const MAXIMO_PAGOS_PENDIENTES = 5;
+const MUCHOS_PAGOS_PENDIENTES = "Hay varios pagos con Webpay sin terminar desde esta misma conexión a internet. " +
+  "Espera unos minutos y vuelve a intentarlo.";
+
+// Huella de la conexión de quien compra (IP, o su bloque /64 si es IPv6), cifrada con el
+// secreto del servidor: sirve para contar pagos pendientes sin guardar la dirección IP.
+async function huellaDeRed(c) {
+  const llave = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(await secretoDeSesiones(c.env.DB)),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const firma = await crypto.subtle.sign(
+    "HMAC", llave, new TextEncoder().encode("red|" + redDeIp(c.req.header("CF-Connecting-IP"))));
+  return aHex(new Uint8Array(firma)).slice(0, 32);
+}
+
+async function demasiadosPendientes(db, red) {
+  const fila = await db.prepare(
+    `SELECT COUNT(*) AS n FROM pedidos
+     WHERE red_origen = ? AND metodo_pago = 'webpay' AND estado_pago = 'pendiente'`
+  ).bind(red).first();
+  return fila.n >= MAXIMO_PAGOS_PENDIENTES;
+}
 
 // Año en hora de Chile (el número de pedido lleva el año en que se hizo la compra).
 const ANIO_CHILE = new Intl.DateTimeFormat("en-US", { timeZone: "America/Santiago", year: "numeric" });
@@ -140,17 +169,27 @@ rutasPublicas.post("/pedidos", async (c) => {
     throw new ErrorPublico(400, "El total del pedido es $0: no se puede pagar con Webpay.");
   }
 
+  // Límite de pagos Webpay sin terminar por conexión (ver MAXIMO_PAGOS_PENDIENTES).
+  const red = datos.pago === "webpay" ? await huellaDeRed(c) : null;
+  if (red && await demasiadosPendientes(db, red)) throw new ErrorPublico(429, MUCHOS_PAGOS_PENDIENTES);
+
   // Todo el pedido se guarda en UN solo batch: o se guarda completo o no se guarda nada.
   const tokenAcceso = aBase64Url(bytesAleatorios(24));
   const momento = ahora();
   const { comprador, retira } = datos;
   const sentencias = [
+    // El pedido solo se inserta si esa conexión no llegó al límite de pagos pendientes.
+    // La cuenta se hace DENTRO del batch, así que muchas peticiones simultáneas no lo saltan.
+    // Si no se inserta, el INSERT de los ítems falla (pedido_id NOT NULL) y se deshace todo.
     db.prepare(
       `INSERT INTO pedidos (token_acceso, comprador_nombre, comprador_correo, comprador_fono,
-         retira_tipo, retira_nombre, retira_extra, metodo_pago, total, creado_en, actualizado_en)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         retira_tipo, retira_nombre, retira_extra, metodo_pago, total, red_origen, creado_en, actualizado_en)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+       WHERE ?10 IS NULL OR (SELECT COUNT(*) FROM pedidos
+         WHERE red_origen = ?10 AND metodo_pago = 'webpay' AND estado_pago = 'pendiente') < ?13`
     ).bind(tokenAcceso, comprador.nombre, comprador.correo, comprador.fono,
-      retira.tipo, retira.nombre, retira.extra, datos.pago, total, momento, momento),
+      retira.tipo, retira.nombre, retira.extra, datos.pago, total, red, momento, momento,
+      MAXIMO_PAGOS_PENDIENTES),
     // El número sale del id que le dio la base de datos: RSG-2026-1001, RSG-2026-1002, …
     db.prepare(
       `UPDATE pedidos SET numero = 'RSG-' || ? || '-' || (1000 + id)
@@ -177,6 +216,7 @@ rutasPublicas.post("/pedidos", async (c) => {
       const revision = await leerPrendas(db, datos.items);
       throw errorSinStock(revision.sinStock.length ? revision.sinStock : items.map((i) => i.id), porId);
     }
+    if (red && await demasiadosPendientes(db, red)) throw new ErrorPublico(429, MUCHOS_PAGOS_PENDIENTES);
     throw error;
   }
   const { id: pedidoId, numero } = resultados[1].results[0];

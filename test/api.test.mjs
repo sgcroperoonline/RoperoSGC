@@ -1315,6 +1315,45 @@ test("admin: 429 después de muchos intentos fallidos", OPC, async () => {
 /* ---------- CSV ---------- */
 
 // Lee una fila con separador ";" y campos entre comillas (las comillas dobles "" son una comilla)
+test("límite: máximo 5 pagos Webpay sin terminar por conexión, sin guardar la IP", OPC, async () => {
+  await crearPrenda("LIM-01", { stock: 10 });
+  const ip = "203.0.113.50";
+  const pedirDesde = desde => e.api("/api/pedidos", {
+    metodo: "POST", cuerpo: cuerpoPedido([{ id: "LIM-01", cant: 1 }]), headers: { "CF-Connecting-IP": desde }
+  });
+  const cancelar = p => e.api(`/api/pedidos/${encodeURIComponent(p.numero)}/cancelar`, { metodo: "POST", cuerpo: { t: p.token } });
+
+  // 8 pedidos simultáneos desde la misma conexión: solo pasan 5
+  const respuestas = await Promise.all(Array.from({ length: 8 }, () => pedirDesde(ip)));
+  const creados = respuestas.filter(r => r.status === 201).map(r => r.datos);
+  const rechazados = respuestas.filter(r => r.status === 429);
+  assert.equal(creados.length, 5, `pasaron ${creados.length}: ${respuestas.map(r => r.status).join(",")}`);
+  assert.equal(rechazados.length, 3);
+  assert.match(rechazados[0].datos.error, /pagos con Webpay sin terminar/);
+  assert.equal(await stockDe("LIM-01"), 5, "los pedidos rechazados no reservan prendas");
+
+  // Otra conexión puede comprar igual
+  const otra = await pedirDesde("198.51.100.7");
+  assert.equal(otra.status, 201, otra.texto);
+
+  // Al cancelar uno de los 5 se libera un cupo
+  assert.equal((await cancelar(creados[0])).status, 200);
+  const sexto = await pedirDesde(ip);
+  assert.equal(sexto.status, 201, sexto.texto);
+  assert.equal((await pedirDesde(ip)).status, 429);
+
+  // En la base no queda la IP: solo una huella cifrada
+  const filas = await e.sql(`SELECT red_origen FROM pedidos WHERE numero = '${sexto.datos.numero}'`);
+  assert.match(filas[0].red_origen, /^[0-9a-f]{32}$/);
+  assert.ok(!filas[0].red_origen.includes("203.0.113"));
+
+  // Limpieza: se cancelan los pendientes para no afectar otros tests
+  for (const p of [...creados.slice(1), sexto.datos, otra.datos]) {
+    assert.equal((await cancelar(p)).status, 200);
+  }
+  assert.equal(await stockDe("LIM-01"), 10);
+});
+
 function leerFilaCsv(linea) {
   const celdas = [];
   let actual = "", entreComillas = false;

@@ -16,7 +16,7 @@ const llaveHmac = (bytes, usos) => crypto.subtle.importKey("raw", bytes, { name:
 // Secreto aleatorio guardado en la base de datos (tabla "ajustes", migración 0002).
 // Si falta, se crea una vez. Se guarda en memoria para no leerlo en cada petición.
 let secretoGuardado = null;
-async function secretoDeSesiones(db) {
+export async function secretoDeSesiones(db) {
   if (secretoGuardado) return secretoGuardado;
   const leer = db.prepare("SELECT valor FROM ajustes WHERE clave = 'secreto_sesiones'");
   let fila = await leer.first();

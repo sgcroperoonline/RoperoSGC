@@ -120,7 +120,8 @@ Panel de voluntarias: `http://localhost:8787/admin.html`, con la `ADMIN_CLAVE` d
    ```
 
    Cada vez que el proyecto traiga una migración nueva en `migrations/` (por ejemplo
-   `0002_ajustes.sql`), corre `npm run db:migrar:remoto` **antes** de `npm run deploy`.
+   `0002_ajustes.sql` o `0003_limite_pagos.sql`), corre `npm run db:migrar:remoto` **antes**
+   de `npm run deploy`.
    Solo aplica las que faltan.
 4. Guarda la clave del panel (te la pide sin mostrarla en pantalla):
 
@@ -190,6 +191,13 @@ aparece. Si no aparece, reintenta, o devuelve el dinero a mano y márcalo como d
 anula al instante y las prendas siguen en su carrito. Si cierra la pestaña, cada 10 minutos el
 servidor anula los pedidos que llevan más de 20 minutos sin pagarse y las prendas vuelven al
 catálogo. No se hace ningún cobro: Transbank solo cobra cuando el servidor confirma el pago.
+
+**Límite de pagos sin terminar:** desde una misma conexión a internet puede haber como máximo
+**5 pagos con Webpay sin terminar** a la vez. Así nadie puede reservar todo el catálogo dejando
+pagos a medias. Una familia normal nunca llega al límite (la tienda cancela su pago anterior
+antes de crear otro); el margen de 5 es para familias que comparten el Wi-Fi del colegio. Para
+contar no se guarda la dirección IP, solo una huella cifrada. El número se cambia en
+`MAXIMO_PAGOS_PENDIENTES` dentro de `src/pedidos.js`.
 
 **Pagos sin confirmar:** si al volver de Webpay el servidor no logra saber si el pago se hizo
 (Transbank no contesta), el pedido queda **pendiente** con sus prendas reservadas y la tienda
