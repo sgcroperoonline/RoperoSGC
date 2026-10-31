@@ -102,6 +102,21 @@ Panel de voluntarias: `http://localhost:8787/admin.html`, con la `ADMIN_CLAVE` d
 
 ## 4. Publicarlo gratis en Cloudflare
 
+**Camino sin terminal (el que usa el ropero):** en Cloudflare, *Workers & Pages* → *Create* →
+*Import a repository* → `sgcroperoonline/RoperoSGC`, con:
+
+| Campo | Valor |
+|---|---|
+| Project name | `ropero-sg` (igual al `name` de `wrangler.jsonc`) |
+| Build command | vacío |
+| Deploy command | `npx wrangler d1 migrations apply DB --remote && npx wrangler deploy` |
+
+La base de datos `ropero-sg` ya está creada y su `database_id` está en `wrangler.jsonc`. Después
+del primer deploy, agrega la clave del panel en *Settings* → *Variables and Secrets* → *Add* →
+tipo *Secret*, nombre `ADMIN_CLAVE`. Cada push a `main` se publica solo y aplica las migraciones
+nuevas. Los pasos de abajo son el camino equivalente desde la terminal.
+
+
 1. Crea una cuenta gratis en [dash.cloudflare.com](https://dash.cloudflare.com/sign-up).
 2. En la carpeta del proyecto:
 

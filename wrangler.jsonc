@@ -15,12 +15,12 @@
     "run_worker_first": ["/api/*"]
   },
 
-  // Base de datos. Reemplaza database_id por el que te entrega:  npx wrangler d1 create ropero-sg
+  // Base de datos D1 "ropero-sg" (creada en el panel de Cloudflare).
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "ropero-sg",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "a0e5fe58-d082-4beb-b8c1-9582c073bab2",
       "migrations_dir": "migrations"
     }
   ],
