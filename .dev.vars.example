@@ -1,0 +1,22 @@
+# Copia este archivo como .dev.vars para probar en tu computador (npm run dev).
+# .dev.vars NO se sube a GitHub. Lo que pongas aquí reemplaza a las variables de
+# wrangler.jsonc, pero solo en tu computador. En Cloudflare las claves se guardan con:
+#   npx wrangler secret put ADMIN_CLAVE
+#   npx wrangler secret put WEBPAY_API_KEY
+#   npx wrangler secret put SMTP_CLAVE
+
+# Clave del panel de voluntarias (elige una larga)
+ADMIN_CLAVE=cambia-esta-clave
+
+# En tu computador Webpay siempre en modo de pruebas, y de vuelta a localhost
+# (aunque wrangler.jsonc ya diga "produccion" y tenga la dirección publicada).
+WEBPAY_AMBIENTE=integracion
+WEBPAY_CODIGO_COMERCIO=597055555532
+URL_PUBLICA=
+
+# Déjala vacía: en modo de pruebas se usa la llave pública de Transbank.
+# La llave de producción va SOLO en Cloudflare (npx wrangler secret put WEBPAY_API_KEY).
+WEBPAY_API_KEY=
+
+# Contraseña de aplicación del correo que envía los comprobantes (Gmail: myaccount.google.com/apppasswords)
+SMTP_CLAVE=

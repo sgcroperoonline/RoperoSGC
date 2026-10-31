@@ -14,7 +14,7 @@
 <header class="cabecera">
   <div class="contenedor">
     <a class="marca" href="index.html">
-      <span class="escudo">SG</span>
+      <img class="escudo" src="images/Logobordadosgc.jpg" alt="Logo SG">
       <span><span class="nombre">ROPERO SG</span><br>
       <span class="bajada">Saint George's College</span></span>
     </a>
@@ -54,29 +54,39 @@
 <footer class="pie">
   <div class="contenedor">
     <div class="legal" style="grid-column:1/-1">
-      Prototipo escolar sin fines comerciales · Ropero SG
+      Ropero SG · Saint George's College · Proyecto de Pensamiento Computacional II
     </div>
   </div>
 </footer>
 
-<script src="js/datos.js"></script>
-<script>
+<!-- datos.js es un módulo: lo importamos directamente para leer la pauta
+     (el navegador lo descarga y ejecuta una sola vez) -->
+<script type="module" src="js/datos.js"></script>
+<script type="module">
+import { ESTADOS } from "./js/datos.js";
+
+// Evita que un texto con < o & se interprete como HTML
+const escapar = t => String(t ?? "")
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+  .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+
 document.getElementById("tarjetasPauta").innerHTML =
   Object.entries(ESTADOS).map(([clave, e]) => `
-    <div class="caja" id="${clave}">
+    <div class="caja" id="${escapar(clave)}">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
-        <span class="punto" style="background:${e.color};width:22px;height:22px"></span>
-        <h3 style="font-size:1.35rem">${e.etiqueta}</h3>
+        <span class="punto" style="background:${escapar(e.color)};width:22px;height:22px"></span>
+        <h3 style="font-size:1.35rem">${escapar(e.etiqueta)}</h3>
       </div>
-      <p class="ayuda">${e.resumen}</p>
+      <p class="ayuda">${escapar(e.resumen)}</p>
       <ul style="padding-left:20px;display:flex;flex-direction:column;gap:6px">
-        ${e.criterios.map(c => `<li>${c}</li>`).join("")}
+        ${e.criterios.map(c => `<li>${escapar(c)}</li>`).join("")}
       </ul>
     </div>`).join("");
 
 // Resalta el estado si se llega con #excelente, #bueno, etc.
 if (location.hash){
-  const t = document.querySelector(location.hash);
+  let t = null;
+  try{ t = document.getElementById(decodeURIComponent(location.hash.slice(1))); }catch(e){ /* # mal escrito */ }
   if (t){ t.style.outline = "3px solid var(--dorado)"; t.scrollIntoView({block:"center"}); }
 }
 </script>

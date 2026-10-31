@@ -9,52 +9,88 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/estilos.css">
+
+<!-- Estilos que solo usa el panel (estilos.css es de la tienda) -->
+<style>
+  .insignias{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:22px; }
+
+  .barra-tabla{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+  .barra-tabla input, .barra-tabla select{
+    border:1px solid var(--borde); border-radius:10px; padding:11px 13px;
+    font-family:var(--cuerpo); font-size:.92rem; background:#fff; color:var(--texto);
+  }
+  .barra-tabla input{ flex:1; min-width:220px; }
+  .conteo-panel{ color:var(--tenue); font-size:.87rem; margin-bottom:12px; }
+
+  .miniatura{ width:42px; height:42px; max-width:none; object-fit:contain; border:1px solid var(--borde); border-radius:6px; background:#fff; }
+  .chico{ color:var(--tenue); font-size:.8rem; }
+  .acciones-fila{ display:flex; flex-direction:column; gap:6px; align-items:flex-start; }
+  .acciones-fila .btn{ white-space:nowrap; }
+  td.acciones-prenda{ white-space:nowrap; }
+
+  /* Mensaje de "cargando" o de error dentro de una tabla o lista */
+  .estado-carga{ padding:30px 20px; text-align:center; color:var(--tenue); }
+  .estado-carga .btn{ margin-top:12px; }
+
+  /* Detalle de las transacciones Webpay de un pedido */
+  details.transacciones{ margin-top:6px; font-size:.8rem; }
+  details.transacciones summary{ cursor:pointer; color:var(--azul); font-weight:600; }
+  details.transacciones ul{ padding-left:18px; margin-top:5px; display:flex; flex-direction:column; gap:4px; color:var(--texto); }
+
+  .vista-previa img{ max-height:130px; border:1px solid var(--borde); border-radius:9px; padding:6px; background:#fff; }
+  .vista-previa p{ font-size:.8rem; color:var(--tenue); margin-top:6px; }
+  #fCodigo[readonly]{ background:var(--papel); color:var(--tenue); }
+
+  .botones{ display:flex; gap:9px; flex-wrap:wrap; margin-top:12px; }
+
+  #aviso{
+    display:none; position:fixed; left:50%; bottom:26px; transform:translateX(-50%);
+    background:#142A57; color:#fff; padding:13px 22px; border-radius:999px; z-index:200;
+    box-shadow:0 8px 24px rgba(0,0,0,.25); font-size:.9rem; max-width:90vw; text-align:center;
+  }
+  #aviso.error{ background:#A81B1F; }
+</style>
 </head>
 <body>
-
-<div class="cinta-demo">
-  Panel de demostración · La clave está escrita en el código, no protege datos reales
-</div>
 
 <header class="cabecera">
   <div class="contenedor">
     <a class="marca" href="index.html">
-      <span class="escudo">SG</span>
+      <img class="escudo" src="images/Logobordadosgc.jpg" alt="Logo SG">
       <span><span class="nombre">ROPERO SG</span><br>
       <span class="bajada">Panel de voluntarias</span></span>
     </a>
     <div style="flex:1"></div>
     <nav class="menu">
       <a href="index.html">Ver el catálogo</a>
-      <button onclick="salir()">Salir</button>
+      <button id="btnSalir" class="oculto" onclick="salir()">Salir</button>
     </nav>
   </div>
 </header>
 
 <!-- ==================== INGRESO ==================== -->
 <main id="pantallaIngreso" class="contenedor" style="max-width:460px;padding-top:60px;padding-bottom:80px">
-  <div class="caja">
+  <form class="caja" id="formIngreso" method="post" onsubmit="entrar(event)">
     <h3>Acceso de voluntarias</h3>
     <p class="ayuda">Ingresa la clave del ropero para publicar prendas y revisar pedidos.</p>
     <div class="campo">
       <label for="claveIngreso">Clave</label>
-      <input id="claveIngreso" type="password" placeholder="••••••••">
-      <p class="pista" id="errorClave" style="color:var(--error)"></p>
+      <input id="claveIngreso" type="password" autocomplete="current-password" placeholder="••••••••">
+      <p class="pista" id="errorClave" style="color:var(--error)" role="alert"></p>
     </div>
-    <button class="btn btn-azul btn-ancho" onclick="entrar()">Entrar</button>
-    <p class="pista" style="margin-top:14px">
-      Clave del prototipo: <strong>ropero2026</strong> (se cambia en <code>js/datos.js</code>).
-    </p>
-  </div>
+    <button class="btn btn-azul btn-ancho" id="btnEntrar" type="submit">Entrar</button>
+  </form>
 </main>
 
 <!-- ==================== PANEL ==================== -->
 <main id="panel" class="contenedor oculto" style="padding-top:26px;padding-bottom:70px">
 
   <h1 style="font-size:1.7rem;margin-bottom:4px">Panel del Ropero</h1>
-  <p style="color:var(--tenue);margin-bottom:22px">
+  <p style="color:var(--tenue);margin-bottom:12px">
     Todo lo que hagas aquí se ve inmediatamente en el catálogo.
   </p>
+  <!-- Se llenan con /api/admin/estado: modo de Webpay y si los correos están activos -->
+  <div class="insignias" id="insignias"></div>
 
   <div class="pestanas">
     <button data-p="prendas"    class="activa" onclick="pestana('prendas')">Prendas</button>
@@ -66,12 +102,12 @@
 
   <!-- ---------- PRENDAS ---------- -->
   <section id="sec-prendas" class="seccion">
-    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
-      <input id="filtroPrendas" placeholder="Buscar por código, nombre, marca o talla…"
-             style="flex:1;min-width:220px;border:1px solid var(--borde);border-radius:10px;padding:11px 13px;font-family:var(--cuerpo)">
+    <div class="barra-tabla">
+      <label class="solo-lectores" for="filtroPrendas">Buscar prendas</label>
+      <input id="filtroPrendas" type="search" placeholder="Buscar por código, nombre, marca o talla…">
       <button class="btn btn-azul btn-chico" onclick="limpiarFormulario();pestana('nueva')">+ Agregar prenda</button>
     </div>
-    <p style="color:var(--tenue);font-size:.87rem;margin-bottom:12px" id="totalPrendas"></p>
+    <p class="conteo-panel" id="totalPrendas"></p>
     <div class="tabla-marco" id="tablaPrendas"></div>
   </section>
 
@@ -84,9 +120,10 @@
 
         <div class="dos">
           <div class="campo"><label for="fCodigo">Código</label>
-            <input id="fCodigo"><p class="pista">Se genera solo. Pégalo en la etiqueta física.</p></div>
+            <input id="fCodigo" maxlength="20" autocapitalize="characters">
+            <p class="pista" id="pistaCodigo">Se sugiere solo. Pégalo en la etiqueta física.</p></div>
           <div class="campo"><label for="fNombre">Nombre de la prenda</label>
-            <input id="fNombre" placeholder="Ej: Polar azul con cierre completo"></div>
+            <input id="fNombre" maxlength="100" placeholder="Ej: Polar azul con cierre completo"></div>
         </div>
 
         <div class="dos">
@@ -102,29 +139,32 @@
 
         <div class="dos">
           <div class="campo"><label for="fPrecio">Precio en pesos</label>
-            <input id="fPrecio" type="number" min="0" step="500"></div>
+            <input id="fPrecio" type="text" inputmode="numeric" maxlength="9" autocomplete="off" placeholder="4000">
+            <p class="pista">Solo números, sin puntos: 4000.</p></div>
           <div class="campo"><label for="fStock">Cantidad disponible</label>
-            <input id="fStock" type="number" min="0" step="1"><p class="pista">Casi siempre 1: son prendas únicas.</p></div>
+            <input id="fStock" type="text" inputmode="numeric" maxlength="3" autocomplete="off" placeholder="1">
+            <p class="pista">Casi siempre 1: son prendas únicas.</p></div>
         </div>
 
         <div class="campo">
           <label for="fDetalle">Observaciones de la revisión</label>
-          <textarea id="fDetalle" rows="3" placeholder="Ej: pilling leve en el cuello, insignia completa, cierre funcionando."></textarea>
+          <textarea id="fDetalle" rows="3" maxlength="500" placeholder="Ej: pilling leve en el cuello, insignia completa, cierre funcionando."></textarea>
           <p class="pista">Sé honesta con los defectos: evita reclamos y reembolsos.</p>
         </div>
 
         <div class="campo">
           <label for="fArchivo">Foto de la prenda</label>
-          <input id="fArchivo" type="file" accept="image/*" onchange="previsualizar(this)">
-          <p class="pista">Sobre fondo claro, prenda estirada. Máximo 900 KB.</p>
+          <input id="fArchivo" type="file" accept="image/*" onchange="elegirFoto(this)">
+          <p class="pista">Sobre fondo claro, prenda estirada. Puedes usar la foto del teléfono (hasta 15 MB): se achica sola antes de subirla.</p>
         </div>
 
         <div class="campo">
-          <label for="fImagen">…o pega la ruta de una foto ya subida</label>
-          <input id="fImagen" placeholder="img/polar-12.jpg">
+          <label for="fImagen">…o escribe la ruta de una foto ya subida</label>
+          <input id="fImagen" maxlength="300" placeholder="/img/prendas/SG-0004.png">
+          <p class="pista">Debe empezar con <code>/img/</code>, <code>/api/imagenes/</code> o <code>https://</code>.</p>
         </div>
 
-        <div id="vistaPrevia" style="margin-bottom:16px"></div>
+        <div id="vistaPrevia" class="vista-previa" style="margin-bottom:16px"></div>
 
         <label class="opcion">
           <input type="checkbox" id="fPublicado" checked>
@@ -158,6 +198,15 @@
     <p style="color:var(--tenue);font-size:.9rem;margin-bottom:14px">
       Lista de retiro. Antes de entregar, revisa el número de pedido y quién está autorizado a retirar.
     </p>
+    <div class="barra-tabla">
+      <label for="verPedidos" style="font-weight:700;font-size:.87rem">Mostrar</label>
+      <select id="verPedidos" onchange="pintarTablaPedidos()">
+        <option value="activos">Activos (falta cobrar o entregar)</option>
+        <option value="todos">Todos</option>
+      </select>
+      <button class="btn btn-fantasma btn-chico" onclick="cargarPedidos()">Actualizar</button>
+    </div>
+    <p class="conteo-panel" id="totalPedidos"></p>
     <div class="tabla-marco" id="tablaPedidos"></div>
   </section>
 
@@ -165,53 +214,33 @@
   <section id="sec-reembolsos" class="seccion oculto">
     <p style="color:var(--tenue);font-size:.9rem;margin-bottom:14px">
       Al aprobar un reembolso, las prendas vuelven automáticamente al catálogo.
+      Si el pedido se pagó con Webpay, el dinero se devuelve solo a la tarjeta.
     </p>
     <div id="listaReembolsos"></div>
   </section>
 
-  <!-- ---------- EXPORTAR ---------- -->
+  <!-- ---------- RESUMEN Y RESPALDO ---------- -->
   <section id="sec-exportar" class="seccion oculto">
     <div class="columnas">
-      <div>
-        <div class="caja">
-          <h3>Guardar los cambios de verdad</h3>
-          <p class="ayuda">Importante: lo que agregas en este panel se guarda en el navegador de este
-            computador. Para que lo vea todo el mundo, descarga el archivo y súbelo a GitHub.</p>
-          <ol style="padding-left:20px;display:flex;flex-direction:column;gap:8px;font-size:.9rem;margin-bottom:18px">
-            <li>Aprieta "Descargar PRENDAS actualizado".</li>
-            <li>Abre <code>js/datos.js</code> en Visual Studio Code.</li>
-            <li>Reemplaza el bloque <code>const PRENDAS = [ … ];</code> por el del archivo descargado.</li>
-            <li>Guarda y sube el cambio a GitHub.</li>
-          </ol>
-          <div style="display:flex;gap:11px;flex-wrap:wrap">
-            <button class="btn btn-azul" onclick="exportarDatos()">Descargar PRENDAS actualizado</button>
-            <button class="btn btn-linea" onclick="exportarVentas()">Descargar ventas en CSV</button>
-          </div>
-        </div>
-
-        <div class="caja">
-          <h3>Empezar de cero</h3>
-          <p class="ayuda">Borra prendas, pedidos y carrito guardados en este navegador y vuelve
-            a los datos originales de <code>js/datos.js</code>. Útil para demostrar el sitio.</p>
-          <button class="btn btn-peligro" onclick="reiniciarTodo()">Reiniciar el prototipo</button>
-        </div>
+      <div class="caja">
+        <h3>Resumen</h3>
+        <p class="ayuda">Cifras de la tienda en este momento.</p>
+        <div id="resumenCifras"></div>
       </div>
 
       <div class="caja">
-        <h3>Resumen</h3>
-        <p class="ayuda">Cifras de este navegador.</p>
-        <div id="resumenCifras"></div>
+        <h3>Respaldo de ventas</h3>
+        <p class="ayuda">Descarga todas las ventas en una planilla que se abre con Excel o Google Sheets.</p>
+        <button class="btn btn-linea" id="btnCsv" onclick="descargarVentas()">Descargar ventas en CSV</button>
       </div>
     </div>
   </section>
 
 </main>
 
-<div id="aviso" style="display:none;position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
-  background:#142A57;color:#fff;padding:13px 22px;border-radius:999px;z-index:200;
-  box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:.9rem;max-width:90vw;text-align:center"></div>
+<div id="aviso" role="status" aria-live="polite"></div>
 
-<script src="js/datos.js"></script>
-<script src="js/admin.js"></script>
+<script type="module" src="js/datos.js"></script>
+<script defer src="js/admin.js"></script>
 </body>
 </html>

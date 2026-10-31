@@ -12,10 +12,6 @@
 </head>
 <body>
 
-<div class="cinta-demo">
-  Prototipo de demostración · Los pagos no son reales y los datos se guardan solo en este navegador
-</div>
-
 <div class="barra-superior">
   <div class="contenedor">
     <span>Retiro en el colegio · <span class="js-horario"></span></span>
@@ -117,7 +113,7 @@
             <div class="campo">
               <label for="compCorreo">Correo electrónico</label>
               <input id="compCorreo" type="email" placeholder="nombre@correo.cl">
-              <p class="pista">Aquí llega el comprobante y el número de pedido.</p>
+              <p class="pista js-pista-correo">Aquí llega el comprobante y el número de pedido.</p>
             </div>
             <div class="campo">
               <label for="compFono">Teléfono</label>
@@ -171,7 +167,7 @@
 
         <div style="display:flex;gap:11px;flex-wrap:wrap;margin-bottom:40px">
           <button class="btn btn-fantasma" onclick="irACatalogo()">← Seguir comprando</button>
-          <button class="btn btn-dorado" onclick="confirmarPedido()">Confirmar pedido</button>
+          <button class="btn btn-dorado" id="btnConfirmar" onclick="confirmarPedido()">Confirmar pedido</button>
         </div>
       </div>
 
@@ -199,7 +195,7 @@
         <div class="campo"><label for="buscarCorreo">Correo de la compra</label>
           <input id="buscarCorreo" type="email" placeholder="nombre@correo.cl"></div>
       </div>
-      <button class="btn btn-azul" onclick="buscarPedido()">Buscar pedido</button>
+      <button class="btn btn-azul" id="btnBuscarPedido" onclick="buscarPedido()">Buscar pedido</button>
     </div>
 
     <div id="resultadoPedidos"></div>
@@ -235,7 +231,7 @@
       <p><a href="admin.html">Acceso voluntarias</a></p>
     </div>
     <div class="legal" style="grid-column:1/-1">
-      Prototipo escolar sin fines comerciales · Pensamiento Computacional II
+      Ropero SG · Saint George's College · Proyecto de Pensamiento Computacional II
     </div>
   </div>
 </footer>
@@ -243,7 +239,9 @@
 <div id="capaModal"></div>
 <div id="capaPanel"></div>
 
-<script src="js/datos.js"></script>
-<script src="js/tienda.js"></script>
+<!-- datos.js es un módulo (también lo usa el servidor). Los módulos y los
+     scripts "defer" corren en orden, así tienda.js ya encuentra CONFIG. -->
+<script type="module" src="js/datos.js"></script>
+<script defer src="js/tienda.js"></script>
 </body>
 </html>
