@@ -39,9 +39,9 @@
     "SMTP_HOST": "smtp.gmail.com",
     "SMTP_PUERTO": "465",
     "SMTP_SEGURIDAD": "tls",
-    "SMTP_USUARIO": "",
+    "SMTP_USUARIO": "rsgcropero.online@saintgeorge.cl",
     "SMTP_REMITENTE": "",
-    "CORREO_AVISOS": ""
+    "CORREO_AVISOS": "rsgcropero.online@saintgeorge.cl"
   },
 
   "observability": { "enabled": true }
